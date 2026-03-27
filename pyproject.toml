@@ -46,7 +46,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
-    "ruff>=0.15.0,<0.16.0",
+    "ruff==0.15.8",
     "mypy>=1.14.0",
 ]
 dashboard = [
@@ -67,6 +67,10 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+force-sort-within-sections = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

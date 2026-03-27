@@ -6,13 +6,13 @@ Entry point that initializes all components and starts the agent loop.
 from __future__ import annotations
 
 import asyncio
-import sys
 from datetime import UTC, datetime
+import sys
 
-import structlog
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+import structlog
 
 from src.agent.graph import build_graph
 from src.agent.state import AgentState

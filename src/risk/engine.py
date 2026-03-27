@@ -8,8 +8,8 @@ Design principle: better to miss a good trade than to take a bad one.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
+import time
 
 import structlog
 
