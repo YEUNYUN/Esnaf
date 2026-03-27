@@ -27,7 +27,11 @@ def get_db():
     """Connect to the SQLite database (read-only)."""
     if not DB_PATH.exists():
         return None
-    return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(
+        f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
 
 
 def load_trades(conn) -> pd.DataFrame:

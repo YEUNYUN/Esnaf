@@ -32,18 +32,19 @@ class TestBacktester:
         df = _make_price_data(100)
         signals = pd.Series(1, index=df.index)  # Always long
 
-        bt = Backtester(initial_capital=10000, fee_rate=0, slippage_pct=0)
+        bt = Backtester(initial_capital=10000, fee_rate=0, slippage_pct=0, timeframe="1d")
         result = bt.run(df, signals, "buy_hold")
 
-        # Should be very close to buy-and-hold benchmark
-        assert abs(result.total_return_pct - result.buy_hold_return_pct) < 1.0
+        # With signal shift, the first bar has no position so returns differ
+        # slightly from the raw buy-and-hold benchmark. Allow wider tolerance.
+        assert abs(result.total_return_pct - result.buy_hold_return_pct) < 5.0
 
     def test_no_trades_hold_signal(self):
         """All-zero signals should produce ~0 return (minus noise)."""
         df = _make_price_data(100)
         signals = pd.Series(0, index=df.index)
 
-        bt = Backtester(initial_capital=10000)
+        bt = Backtester(initial_capital=10000, timeframe="1d")
         result = bt.run(df, signals, "no_trade")
 
         assert result.total_trades == 0
@@ -55,8 +56,8 @@ class TestBacktester:
         # Alternate between long and flat to generate many trades
         signals = pd.Series([1 if i % 10 < 5 else 0 for i in range(100)], index=df.index)
 
-        bt_no_fee = Backtester(initial_capital=10000, fee_rate=0, slippage_pct=0)
-        bt_high_fee = Backtester(initial_capital=10000, fee_rate=0.01, slippage_pct=0)
+        bt_no_fee = Backtester(initial_capital=10000, fee_rate=0, slippage_pct=0, timeframe="1d")
+        bt_high_fee = Backtester(initial_capital=10000, fee_rate=0.01, slippage_pct=0, timeframe="1d")
 
         result_no_fee = bt_no_fee.run(df, signals, "no_fee")
         result_high_fee = bt_high_fee.run(df, signals, "high_fee")
@@ -68,7 +69,7 @@ class TestBacktester:
         df = _make_price_data(200)
         signals = pd.Series([1 if i % 20 < 10 else 0 for i in range(200)], index=df.index)
 
-        bt = Backtester(initial_capital=10000)
+        bt = Backtester(initial_capital=10000, timeframe="1d")
         result = bt.run(df, signals, "test")
 
         assert result.initial_capital == 10000

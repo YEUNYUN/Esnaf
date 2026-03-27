@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 import uuid
 
 import structlog
 
 from src.agent.state import Action, PortfolioState, TradeProposal
+
+if TYPE_CHECKING:
+    from src.storage.database import Database
 
 logger = structlog.get_logger()
 
@@ -39,10 +43,12 @@ class PaperBroker:
 
     Tracks positions, capital, and P&L as if executing real trades.
     Uses live prices but simulated fills with realistic fee model.
+    Optionally persists positions to a Database so state survives restarts.
     """
 
     initial_capital: float = 10000.0
     fee_rate: float = 0.001  # 0.1% per trade (Binance spot maker fee)
+    database: Database | None = None
 
     # Internal state
     _capital: float = 0.0
@@ -56,7 +62,62 @@ class PaperBroker:
         self._capital = self.initial_capital
         self._daily_start_value = self.initial_capital
 
-    def execute(
+    # --- DB persistence helpers (no-ops when database is None) -------------
+
+    async def load_from_db(self) -> None:
+        """Restore positions and capital from the database (if available)."""
+        if self.database is None:
+            return
+
+        state = await self.database.load_paper_state()
+        if state is not None:
+            self._capital = state.get("capital", self.initial_capital)
+            self._daily_start_value = state.get("daily_start", self._capital)
+
+        rows = await self.database.load_paper_positions()
+        for row in rows:
+            pos = PaperPosition(
+                id=str(uuid.uuid4())[:8],
+                symbol=row["symbol"],
+                side=row["side"],
+                entry_price=row["entry_price"],
+                quantity=row["quantity"],
+                value=row["entry_price"] * row["quantity"],
+                stop_loss=row.get("stop_loss"),
+                take_profit=row.get("take_profit"),
+                opened_at=row["opened_at"],
+            )
+            self._positions.append(pos)
+
+        if rows:
+            logger.info("paper_broker_restored", positions=len(rows))
+
+    async def _persist_position(self, pos: PaperPosition) -> None:
+        if self.database is None:
+            return
+        await self.database.save_paper_position(
+            symbol=pos.symbol,
+            side=pos.side,
+            qty=pos.quantity,
+            entry=pos.entry_price,
+            stop=pos.stop_loss,
+            tp=pos.take_profit,
+            opened_at=pos.opened_at,
+        )
+
+    async def _remove_persisted_position(self, symbol: str) -> None:
+        if self.database is None:
+            return
+        await self.database.delete_paper_position(symbol)
+
+    async def _persist_state(self) -> None:
+        if self.database is None:
+            return
+        await self.database.save_paper_state(self._capital, self._daily_start_value)
+
+    # --- Public API --------------------------------------------------------
+
+    async def execute(
         self,
         proposal: TradeProposal,
         current_price: float,
@@ -71,20 +132,20 @@ class PaperBroker:
         multiplier = size_multipliers.get(proposal.size_suggestion, 0.03)
 
         if proposal.action == Action.BUY:
-            return self._open_long(proposal, current_price, multiplier)
+            return await self._open_long(proposal, current_price, multiplier)
         elif proposal.action == Action.SELL:
-            return self._open_short(proposal, current_price, multiplier)
+            return await self._open_short(proposal, current_price, multiplier)
         elif proposal.action == Action.CLOSE_LONG:
-            return self._close_positions("long", current_price)
+            return await self._close_positions("long", current_price)
         elif proposal.action == Action.CLOSE_SHORT:
-            return self._close_positions("short", current_price)
+            return await self._close_positions("short", current_price)
 
         return {"status": "error", "message": f"Unknown action: {proposal.action}"}
 
-    def get_portfolio_state(self, current_price: float) -> PortfolioState:
+    async def get_portfolio_state(self, current_price: float) -> PortfolioState:
         """Get current portfolio state with unrealized P&L."""
         # Check stop-loss and take-profit first (may close positions)
-        self._check_stops(current_price)
+        await self._check_stops(current_price)
 
         # Update unrealized P&L for all remaining positions
         for pos in self._positions:
@@ -120,13 +181,15 @@ class PaperBroker:
             daily_trades=self._daily_trades,
         )
 
-    def reset_daily_stats(self, current_price: float) -> None:
+    async def reset_daily_stats(self, current_price: float) -> None:
         """Reset daily P&L tracking. Call at start of each trading day."""
-        portfolio = self.get_portfolio_state(current_price)
+        portfolio = await self.get_portfolio_state(current_price)
         self._daily_start_value = portfolio.total_value
         self._daily_trades = 0
 
-    def _open_long(
+    # --- Internal helpers --------------------------------------------------
+
+    async def _open_long(
         self, proposal: TradeProposal, price: float, size_mult: float
     ) -> dict:
         """Open a long position."""
@@ -152,6 +215,9 @@ class PaperBroker:
         self._positions.append(position)
         self._daily_trades += 1
 
+        await self._persist_position(position)
+        await self._persist_state()
+
         result = {
             "status": "filled",
             "position_id": position.id,
@@ -166,7 +232,7 @@ class PaperBroker:
         logger.info("paper_trade_opened", **result)
         return result
 
-    def _open_short(
+    async def _open_short(
         self, proposal: TradeProposal, price: float, size_mult: float
     ) -> dict:
         """Open a short position (simulated)."""
@@ -191,6 +257,9 @@ class PaperBroker:
         self._positions.append(position)
         self._daily_trades += 1
 
+        await self._persist_position(position)
+        await self._persist_state()
+
         result = {
             "status": "filled",
             "position_id": position.id,
@@ -205,7 +274,7 @@ class PaperBroker:
         logger.info("paper_trade_opened", **result)
         return result
 
-    def _close_positions(self, side: str, current_price: float) -> dict:
+    async def _close_positions(self, side: str, current_price: float) -> dict:
         """Close all positions of a given side."""
         to_close = [p for p in self._positions if p.side == side]
         if not to_close:
@@ -228,7 +297,10 @@ class PaperBroker:
             self._total_pnl += net_pnl
             self._positions.remove(pos)
 
+            await self._remove_persisted_position(pos.symbol)
+
         self._daily_trades += 1
+        await self._persist_state()
 
         result = {
             "status": "closed",
@@ -243,7 +315,7 @@ class PaperBroker:
         logger.info("paper_positions_closed", **result)
         return result
 
-    def _check_stops(self, current_price: float) -> None:
+    async def _check_stops(self, current_price: float) -> None:
         """Check and trigger stop-loss / take-profit for all positions."""
         to_close: list[tuple[str, str]] = []  # (side, reason) pairs
 
@@ -264,5 +336,5 @@ class PaperBroker:
         for side, reason in to_close:
             if side not in closed_sides:
                 logger.info("paper_stop_triggered", reason=reason, price=current_price)
-                self._close_positions(side, current_price)
+                await self._close_positions(side, current_price)
                 closed_sides.add(side)

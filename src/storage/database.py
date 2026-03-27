@@ -90,6 +90,23 @@ CREATE TABLE IF NOT EXISTS regime_history (
     was_accurate INTEGER DEFAULT NULL
 );
 
+-- Paper broker positions: persisted across restarts
+CREATE TABLE IF NOT EXISTS paper_positions (
+    symbol TEXT PRIMARY KEY,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    stop_loss REAL,
+    take_profit REAL,
+    opened_at TEXT NOT NULL
+);
+
+-- Paper broker state: capital & daily tracking
+CREATE TABLE IF NOT EXISTS paper_state (
+    key TEXT PRIMARY KEY,
+    value REAL NOT NULL
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
@@ -109,6 +126,7 @@ class Database:
         """Connect and initialize the database schema."""
         self._db = await aiosqlite.connect(str(self._db_path))
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(SCHEMA_SQL)
         await self._db.commit()
         logger.info("database_connected", path=str(self._db_path))
@@ -349,3 +367,64 @@ class Database:
             ),
         )
         await self._db.commit()
+
+    # --- Paper broker persistence ------------------------------------------
+
+    async def save_paper_position(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry: float,
+        stop: float | None,
+        tp: float | None,
+        opened_at: str,
+    ) -> None:
+        """Insert or replace a paper position."""
+        assert self._db is not None
+        await self._db.execute(
+            """INSERT OR REPLACE INTO paper_positions
+            (symbol, side, quantity, entry_price, stop_loss, take_profit, opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (symbol, side, qty, entry, stop, tp, opened_at),
+        )
+        await self._db.commit()
+
+    async def delete_paper_position(self, symbol: str) -> None:
+        """Remove a paper position after it is closed."""
+        assert self._db is not None
+        await self._db.execute(
+            "DELETE FROM paper_positions WHERE symbol = ?", (symbol,)
+        )
+        await self._db.commit()
+
+    async def load_paper_positions(self) -> list[dict]:
+        """Return all persisted paper positions."""
+        assert self._db is not None
+        cursor = await self._db.execute("SELECT * FROM paper_positions")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def save_paper_state(
+        self, capital: float, daily_start: float
+    ) -> None:
+        """Persist paper broker capital and daily-start value."""
+        assert self._db is not None
+        await self._db.execute(
+            "INSERT OR REPLACE INTO paper_state (key, value) VALUES ('capital', ?)",
+            (capital,),
+        )
+        await self._db.execute(
+            "INSERT OR REPLACE INTO paper_state (key, value) VALUES ('daily_start', ?)",
+            (daily_start,),
+        )
+        await self._db.commit()
+
+    async def load_paper_state(self) -> dict | None:
+        """Load paper broker state. Returns None if nothing stored."""
+        assert self._db is not None
+        cursor = await self._db.execute("SELECT key, value FROM paper_state")
+        rows = await cursor.fetchall()
+        if not rows:
+            return None
+        return {row["key"]: row["value"] for row in rows}

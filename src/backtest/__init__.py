@@ -45,6 +45,16 @@ class BacktestResult:
         return self.total_return_pct > self.buy_hold_return_pct
 
 
+BARS_PER_YEAR: dict[str, int] = {
+    "1m": 525600,
+    "5m": 105120,
+    "15m": 35040,
+    "1h": 8760,
+    "4h": 2190,
+    "1d": 365,
+}
+
+
 class Backtester:
     """Vectorized backtesting engine."""
 
@@ -53,10 +63,17 @@ class Backtester:
         initial_capital: float = 10000.0,
         fee_rate: float = 0.001,
         slippage_pct: float = 0.05,
+        timeframe: str = "15m",
     ) -> None:
         self._capital = initial_capital
         self._fee_rate = fee_rate
         self._slippage_pct = slippage_pct / 100
+        if timeframe not in BARS_PER_YEAR:
+            raise ValueError(
+                f"Unsupported timeframe '{timeframe}'. "
+                f"Choose from: {', '.join(BARS_PER_YEAR)}"
+            )
+        self._bars_per_year = BARS_PER_YEAR[timeframe]
 
     def run(
         self,
@@ -77,11 +94,20 @@ class Backtester:
         df = df.copy()
         df["signal"] = signals.values
 
-        # Apply slippage
-        df["exec_price"] = df["close"] * (1 + self._slippage_pct * np.sign(df["signal"]))
+        # Shift signals by 1 bar to avoid look-ahead bias:
+        # a signal derived from bar N can only be acted on at bar N+1.
+        df["position"] = df["signal"].shift(1).replace(0, np.nan).ffill().fillna(0)
 
-        # Position tracking
-        df["position"] = df["signal"].replace(0, np.nan).ffill().fillna(0)
+        # Execution price: use next bar's open if available, else close
+        if "open" in df.columns:
+            df["exec_price"] = df["open"] * (
+                1 + self._slippage_pct * np.sign(df["position"])
+            )
+        else:
+            df["exec_price"] = df["close"] * (
+                1 + self._slippage_pct * np.sign(df["position"])
+            )
+
         df["position_change"] = df["position"].diff().fillna(df["position"])
 
         # Returns
@@ -118,11 +144,11 @@ class Backtester:
         drawdown = (df["equity"] - peak) / peak
         max_drawdown = abs(drawdown.min()) * 100
 
-        # Sharpe ratio (annualized, crypto trades 365 days)
-        daily_returns = df["strategy_return_net"]
+        # Sharpe ratio (annualized based on bar timeframe)
+        bar_returns = df["strategy_return_net"]
         sharpe = (
-            daily_returns.mean() / daily_returns.std() * np.sqrt(365)
-            if daily_returns.std() > 0
+            bar_returns.mean() / bar_returns.std() * np.sqrt(self._bars_per_year)
+            if bar_returns.std() > 0
             else 0.0
         )
 
