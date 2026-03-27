@@ -30,6 +30,18 @@
 - **Fix**: Changed test prices to stay within stop-loss range (51000 up, 49500 down)
 - **Lesson**: When testing position state, account for stop-loss/take-profit triggers
 
+### 2026-03-27: Build Phase — Mistake #4
+- **Error**: LangGraph nodes wrapped in lambdas returned coroutine objects instead of dicts
+- **Cause**: Lambdas can't be `async`, so `lambda state: classify_node(state, ...)` returns the coroutine without awaiting it
+- **Fix**: Created proper async wrapper functions (`_make_classify_node`, etc.) instead of lambdas
+- **Lesson**: Never use lambdas to wrap async functions in LangGraph nodes — always use proper async defs
+
+### 2026-03-27: Build Phase — Mistake #5
+- **Error**: Integration test mock dispatched wrong LLM response to analyze node
+- **Cause**: Mock checked for "regime" keyword in user prompt, which appeared in both classify AND analyze prompts
+- **Fix**: Changed mock to check system message only ("regime classifier" vs "trading analyst")
+- **Lesson**: When mocking multi-call LLM flows, dispatch on system prompt (role-specific), not user content
+
 ---
 
 ## Architecture Decisions
