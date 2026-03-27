@@ -83,6 +83,24 @@ async def gather_node(
         else:
             sentiment = SentimentData()
 
+        logger.debug(
+            "market_indicators",
+            cycle_id=cycle_id,
+            symbol=snapshot.symbol,
+            price=snapshot.price,
+            volume_24h=snapshot.volume_24h,
+            bid=snapshot.bid,
+            ask=snapshot.ask,
+            spread_pct=snapshot.spread_pct,
+            rsi=snapshot.rsi,
+            macd=snapshot.macd,
+            macd_signal=snapshot.macd_signal,
+            bbands_upper=snapshot.bbands_upper,
+            bbands_lower=snapshot.bbands_lower,
+            volatility=snapshot.volatility,
+            volume_sma_ratio=snapshot.volume_sma_ratio,
+        )
+
         logger.info(
             "gather_complete",
             cycle_id=cycle_id,

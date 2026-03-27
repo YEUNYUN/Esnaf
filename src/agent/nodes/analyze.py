@@ -164,6 +164,13 @@ async def analyze_node(
 
         result = await llm_client.complete_json(messages, model=model)
 
+        logger.debug(
+            "analyze_raw_response",
+            cycle_id=state.get("cycle_id", "unknown"),
+            model=model,
+            raw_result=result,
+        )
+
         try:
             action = Action(result.get("action", "HOLD"))
         except ValueError:

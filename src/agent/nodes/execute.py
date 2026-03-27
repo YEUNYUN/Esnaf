@@ -30,6 +30,28 @@ async def execute_node(
     regime = state.get("regime")
     cycle_id = state.get("cycle_id", "unknown")
 
+    # Build market data dicts for the decision log
+    market_data = None
+    indicator_data = None
+    if market:
+        market_data = {
+            "symbol": market.symbol,
+            "price": market.price,
+            "volume_24h": market.volume_24h,
+            "bid": market.bid,
+            "ask": market.ask,
+            "spread_pct": market.spread_pct,
+        }
+        indicator_data = {
+            "rsi": market.rsi,
+            "macd": market.macd,
+            "macd_signal": market.macd_signal,
+            "bbands_upper": market.bbands_upper,
+            "bbands_lower": market.bbands_lower,
+            "volatility": market.volatility,
+            "volume_sma_ratio": market.volume_sma_ratio,
+        }
+
     # Log the decision regardless of outcome
     await db.log_decision(
         cycle_id=cycle_id,
@@ -42,6 +64,8 @@ async def execute_node(
         validation_passed=validation_passed,
         validation_reason=state.get("validation_reason", ""),
         model_used=state.get("selected_model"),
+        market_snapshot=market_data,
+        indicators=indicator_data,
     )
 
     # Log regime classification

@@ -9,7 +9,9 @@ import asyncio
 from datetime import UTC, datetime
 import json
 import logging
+from pathlib import Path
 import sys
+import time
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -133,10 +135,46 @@ async def run() -> None:
     load_dotenv()
     settings = load_settings()
 
+    # ── Logging: file (JSON) + console (pretty) ─────────────────────────
+    Path("logs").mkdir(exist_ok=True)
+
+    file_handler = logging.FileHandler("logs/esnaf.jsonl", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+        )
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.getLevelName(settings.agent.log_level))
+    console_handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.dev.ConsoleRenderer(),
+            ],
+        )
+    )
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(logging.DEBUG)
+
     structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(
-            logging.getLevelName(settings.agent.log_level)
-        ),
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+        logger_factory=structlog.stdlib.LoggerFactory(),
     )
 
     console.print("[bold green]╔══════════════════════════════════════╗[/]")
@@ -259,8 +297,60 @@ async def run() -> None:
             pre_cycle_state = dict(state)
 
             try:
+                cycle_start = time.monotonic()
                 state = await run_cycle(graph, state, cycle_num)
+                cycle_duration_ms = int((time.monotonic() - cycle_start) * 1000)
                 consecutive_failures = 0
+
+                # Log full cycle data to the cycle_logs table
+                try:
+                    _market = state.get("market")
+                    _sentiment = state.get("sentiment")
+                    _regime = state.get("regime")
+                    _proposal = state.get("proposal")
+                    _execution = state.get("execution_result") or {}
+                    _portfolio = state.get("portfolio")
+                    await db.log_cycle(
+                        cycle_id=state.get("cycle_id", f"cycle-{cycle_num}"),
+                        cycle_number=cycle_num,
+                        price=_market.price if _market else None,
+                        rsi=_market.rsi if _market else None,
+                        macd=_market.macd if _market else None,
+                        macd_signal=_market.macd_signal if _market else None,
+                        volatility=_market.volatility if _market else None,
+                        volume_24h=_market.volume_24h if _market else None,
+                        bbands_upper=_market.bbands_upper if _market else None,
+                        bbands_lower=_market.bbands_lower if _market else None,
+                        volume_sma_ratio=_market.volume_sma_ratio if _market else None,
+                        bid=_market.bid if _market else None,
+                        ask=_market.ask if _market else None,
+                        spread_pct=_market.spread_pct if _market else None,
+                        fear_greed=_sentiment.fear_greed_index if _sentiment else None,
+                        news_sentiment=_sentiment.news_sentiment if _sentiment else None,
+                        social_sentiment=_sentiment.social_sentiment if _sentiment else None,
+                        regime=_regime.regime.value if _regime else None,
+                        regime_confidence=_regime.regime_confidence if _regime else None,
+                        regime_strategy=_regime.recommended_strategy.value if _regime else None,
+                        action=_proposal.action.value if _proposal else None,
+                        action_confidence=_proposal.confidence if _proposal else None,
+                        reasoning=_proposal.reasoning if _proposal else None,
+                        validation_passed=state.get("validation_passed", False),
+                        validation_reason=state.get("validation_reason"),
+                        executed=_execution.get("status") == "filled",
+                        exec_price=_execution.get("price"),
+                        exec_quantity=_execution.get("quantity"),
+                        exec_value=_execution.get("value"),
+                        exec_fee=_execution.get("fee"),
+                        portfolio_value=_portfolio.total_value if _portfolio else None,
+                        available_capital=_portfolio.available_capital if _portfolio else None,
+                        open_positions=len(_portfolio.open_positions) if _portfolio else None,
+                        daily_pnl=_portfolio.daily_pnl if _portfolio else None,
+                        daily_pnl_pct=_portfolio.daily_pnl_pct if _portfolio else None,
+                        model_used=state.get("selected_model"),
+                        cycle_duration_ms=cycle_duration_ms,
+                    )
+                except Exception as log_err:
+                    logger.warning("cycle_log_error", error=str(log_err))
 
             except KeyboardInterrupt:
                 break

@@ -107,11 +107,63 @@ CREATE TABLE IF NOT EXISTS paper_state (
     value REAL NOT NULL
 );
 
+-- Cycle logs: comprehensive per-cycle data for offline analysis
+CREATE TABLE IF NOT EXISTS cycle_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    cycle_id TEXT NOT NULL,
+    cycle_number INTEGER,
+    -- Market
+    price REAL,
+    rsi REAL,
+    macd REAL,
+    macd_signal REAL,
+    volatility REAL,
+    volume_24h REAL,
+    bbands_upper REAL,
+    bbands_lower REAL,
+    volume_sma_ratio REAL,
+    bid REAL,
+    ask REAL,
+    spread_pct REAL,
+    -- Sentiment
+    fear_greed REAL,
+    news_sentiment REAL,
+    social_sentiment REAL,
+    -- Regime
+    regime TEXT,
+    regime_confidence REAL,
+    regime_strategy TEXT,
+    -- Decision
+    action TEXT,
+    action_confidence REAL,
+    reasoning TEXT,
+    -- Validation
+    validation_passed INTEGER,
+    validation_reason TEXT,
+    -- Execution
+    executed INTEGER DEFAULT 0,
+    exec_price REAL,
+    exec_quantity REAL,
+    exec_value REAL,
+    exec_fee REAL,
+    -- Portfolio
+    portfolio_value REAL,
+    available_capital REAL,
+    open_positions INTEGER,
+    daily_pnl REAL,
+    daily_pnl_pct REAL,
+    -- Meta
+    model_used TEXT,
+    cycle_duration_ms INTEGER
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_decisions_cycle ON decisions(cycle_id);
 CREATE INDEX IF NOT EXISTS idx_regime_history_timestamp ON regime_history(timestamp);
+CREATE INDEX IF NOT EXISTS idx_cycle_logs_timestamp ON cycle_logs(timestamp);
 """
 
 
@@ -367,6 +419,99 @@ class Database:
             ),
         )
         await self._db.commit()
+
+    async def log_cycle(
+        self,
+        cycle_id: str,
+        cycle_number: int | None = None,
+        # Market
+        price: float | None = None,
+        rsi: float | None = None,
+        macd: float | None = None,
+        macd_signal: float | None = None,
+        volatility: float | None = None,
+        volume_24h: float | None = None,
+        bbands_upper: float | None = None,
+        bbands_lower: float | None = None,
+        volume_sma_ratio: float | None = None,
+        bid: float | None = None,
+        ask: float | None = None,
+        spread_pct: float | None = None,
+        # Sentiment
+        fear_greed: float | None = None,
+        news_sentiment: float | None = None,
+        social_sentiment: float | None = None,
+        # Regime
+        regime: str | None = None,
+        regime_confidence: float | None = None,
+        regime_strategy: str | None = None,
+        # Decision
+        action: str | None = None,
+        action_confidence: float | None = None,
+        reasoning: str | None = None,
+        # Validation
+        validation_passed: bool = False,
+        validation_reason: str | None = None,
+        # Execution
+        executed: bool = False,
+        exec_price: float | None = None,
+        exec_quantity: float | None = None,
+        exec_value: float | None = None,
+        exec_fee: float | None = None,
+        # Portfolio
+        portfolio_value: float | None = None,
+        available_capital: float | None = None,
+        open_positions: int | None = None,
+        daily_pnl: float | None = None,
+        daily_pnl_pct: float | None = None,
+        # Meta
+        model_used: str | None = None,
+        cycle_duration_ms: int | None = None,
+    ) -> int:
+        """Log comprehensive cycle data for offline analysis."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            """INSERT INTO cycle_logs
+            (timestamp, cycle_id, cycle_number,
+             price, rsi, macd, macd_signal, volatility, volume_24h,
+             bbands_upper, bbands_lower, volume_sma_ratio, bid, ask, spread_pct,
+             fear_greed, news_sentiment, social_sentiment,
+             regime, regime_confidence, regime_strategy,
+             action, action_confidence, reasoning,
+             validation_passed, validation_reason,
+             executed, exec_price, exec_quantity, exec_value, exec_fee,
+             portfolio_value, available_capital, open_positions,
+             daily_pnl, daily_pnl_pct,
+             model_used, cycle_duration_ms)
+            VALUES (?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?,
+                    ?, ?)""",
+            (
+                datetime.now(UTC).isoformat(),
+                cycle_id,
+                cycle_number,
+                price, rsi, macd, macd_signal, volatility, volume_24h,
+                bbands_upper, bbands_lower, volume_sma_ratio, bid, ask, spread_pct,
+                fear_greed, news_sentiment, social_sentiment,
+                regime, regime_confidence, regime_strategy,
+                action, action_confidence, reasoning,
+                int(validation_passed), validation_reason,
+                int(executed), exec_price, exec_quantity, exec_value, exec_fee,
+                portfolio_value, available_capital, open_positions,
+                daily_pnl, daily_pnl_pct,
+                model_used, cycle_duration_ms,
+            ),
+        )
+        await self._db.commit()
+        return cursor.lastrowid or 0
 
     # --- Paper broker persistence ------------------------------------------
 

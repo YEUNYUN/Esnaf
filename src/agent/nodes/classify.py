@@ -124,6 +124,13 @@ async def classify_node(
 
         result = await llm_client.complete_json(messages, model=model)
 
+        logger.debug(
+            "classify_raw_response",
+            cycle_id=state.get("cycle_id", "unknown"),
+            model=model,
+            raw_result=result,
+        )
+
         # Parse enum fields robustly — LLMs sometimes invent values
         try:
             narrative = NarrativeStage(result.get("narrative_stage", "early"))
