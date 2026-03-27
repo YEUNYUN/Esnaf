@@ -13,6 +13,7 @@ from __future__ import annotations
 from httpx import AsyncClient, HTTPError
 import structlog
 
+from src.agent.sanitize import sanitize_prompt_input
 from src.agent.state import SentimentData
 
 logger = structlog.get_logger()
@@ -100,7 +101,7 @@ class SentimentPipeline:
             for post in data.get("results", [])[:10]:
                 title = post.get("title", "")
                 if title:
-                    headlines.append(title)
+                    headlines.append(sanitize_prompt_input(title))
 
             logger.debug("cryptopanic_fetched", count=len(headlines))
             return headlines

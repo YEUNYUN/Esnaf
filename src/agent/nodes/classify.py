@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import structlog
 
+from src.agent.sanitize import sanitize_prompt_input
 from src.agent.state import (
     AgentState,
     NarrativeStage,
@@ -81,18 +82,18 @@ async def classify_node(
         logger.warning("classify_skipped", reason="no_market_data")
         return {"regime": None}
 
-    # Format recent trades
+    # Format recent trades (sanitize reasoning — it was LLM-generated)
     recent_trades = state.get("recent_trades", [])
     trades_text = "No recent trades" if not recent_trades else "\n".join(
         f"- {t.get('action', '?')} {t.get('symbol', '?')} at ${t.get('price', 0):,.2f} "
-        f"({t.get('reasoning', 'no reason')})"
+        f"({sanitize_prompt_input(t.get('reasoning', 'no reason'))})"
         for t in recent_trades[:5]
     )
 
-    # Format memory
+    # Format memory (sanitize — memory content is LLM-generated)
     memory_entries = state.get("memory", [])
     memory_text = "No lessons yet" if not memory_entries else "\n".join(
-        f"- {m}" for m in memory_entries[:10]
+        f"- {sanitize_prompt_input(m)}" for m in memory_entries[:10]
     )
 
     prompt = REGIME_CLASSIFICATION_PROMPT.format(

@@ -357,3 +357,170 @@ class TestCooldown:
 
         result = engine.validate(good_buy_proposal, portfolio, bull_regime)
         assert result.passed is True
+
+
+class TestAbsBugFixes:
+    """Tests that positive P&L does not trigger drawdown/kill switch."""
+
+    def test_positive_pnl_does_not_trigger_kill_switch(
+        self,
+        engine: RiskEngine,
+        good_buy_proposal: TradeProposal,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        portfolio = PortfolioState(
+            total_value=10500.0,
+            available_capital=8500.0,
+            daily_pnl=500.0,
+            daily_pnl_pct=5.5,
+            daily_trades=1,
+        )
+        result = engine.validate(good_buy_proposal, portfolio, bull_regime)
+        assert result.passed is True
+        assert not engine.is_kill_switch_active
+
+    def test_positive_pnl_does_not_block_trading(
+        self,
+        engine: RiskEngine,
+        good_buy_proposal: TradeProposal,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        portfolio = PortfolioState(
+            total_value=10300.0,
+            available_capital=8300.0,
+            daily_pnl=300.0,
+            daily_pnl_pct=3.1,
+            daily_trades=1,
+        )
+        result = engine.validate(good_buy_proposal, portfolio, bull_regime)
+        assert result.passed is True
+
+
+class TestDirectionalExposure:
+    """Tests for net directional exposure limits."""
+
+    def test_long_directional_exposure_rejected(
+        self,
+        engine: RiskEngine,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        # max_directional_exposure_pct defaults to 20% = $2000
+        # Already $1900 long, adding small (3% = $300) would be $2200 > $2000
+        portfolio = PortfolioState(
+            total_value=10000.0,
+            available_capital=5000.0,
+            open_positions=[
+                {"value": 1000, "side": "long"},
+                {"value": 900, "side": "long"},
+            ],
+            daily_trades=1,
+        )
+        buy = TradeProposal(
+            action=Action.BUY,
+            asset="BTC/USDT",
+            confidence=0.85,
+            size_suggestion="small",
+            reasoning="Test",
+            timeframe="4h",
+            stop_loss_pct=2.0,
+            take_profit_pct=5.0,
+            key_factors=["test"],
+            regime_alignment="With trend",
+        )
+        result = engine.validate(buy, portfolio, bull_regime)
+        assert result.passed is False
+        assert "directional" in result.reason.lower()
+
+    def test_short_directional_exposure_rejected(
+        self,
+        engine: RiskEngine,
+    ) -> None:
+        bear_regime = RegimeClassification(
+            regime=Regime.BEAR_TREND,
+            regime_confidence=0.85,
+            regime_reasoning="Downtrend",
+            recommended_strategy=Strategy.DEFENSIVE,
+            strategy_reasoning="Bear",
+        )
+        portfolio = PortfolioState(
+            total_value=10000.0,
+            available_capital=5000.0,
+            open_positions=[
+                {"value": 1000, "side": "short"},
+                {"value": 900, "side": "short"},
+            ],
+            daily_trades=1,
+        )
+        sell = TradeProposal(
+            action=Action.SELL,
+            asset="BTC/USDT",
+            confidence=0.85,
+            size_suggestion="small",
+            reasoning="Test",
+            timeframe="4h",
+            stop_loss_pct=2.0,
+            take_profit_pct=5.0,
+            key_factors=["test"],
+            regime_alignment="With trend",
+        )
+        result = engine.validate(sell, portfolio, bear_regime)
+        assert result.passed is False
+        assert "directional" in result.reason.lower()
+
+
+class TestStopLossAndTakeProfitLimits:
+    """Tests for stop-loss and take-profit validation."""
+
+    def test_excessive_stop_loss_rejected(
+        self,
+        engine: RiskEngine,
+        portfolio: PortfolioState,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        proposal = TradeProposal(
+            action=Action.BUY,
+            asset="BTC/USDT",
+            confidence=0.85,
+            size_suggestion="small",
+            reasoning="Test",
+            timeframe="4h",
+            stop_loss_pct=50.0,
+            take_profit_pct=5.0,
+            key_factors=["test"],
+            regime_alignment="With trend",
+        )
+        result = engine.validate(proposal, portfolio, bull_regime)
+        assert result.passed is False
+        assert "stop-loss" in result.reason.lower()
+
+    def test_excessive_take_profit_rejected(
+        self,
+        engine: RiskEngine,
+        portfolio: PortfolioState,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        proposal = TradeProposal(
+            action=Action.BUY,
+            asset="BTC/USDT",
+            confidence=0.85,
+            size_suggestion="small",
+            reasoning="Test",
+            timeframe="4h",
+            stop_loss_pct=2.0,
+            take_profit_pct=60.0,
+            key_factors=["test"],
+            regime_alignment="With trend",
+        )
+        result = engine.validate(proposal, portfolio, bull_regime)
+        assert result.passed is False
+        assert "take-profit" in result.reason.lower()
+
+    def test_valid_stop_loss_passes(
+        self,
+        engine: RiskEngine,
+        good_buy_proposal: TradeProposal,
+        portfolio: PortfolioState,
+        bull_regime: RegimeClassification,
+    ) -> None:
+        result = engine.validate(good_buy_proposal, portfolio, bull_regime)
+        assert result.passed is True

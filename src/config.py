@@ -53,6 +53,8 @@ class RiskConfig(BaseSettings):
     trade_cooldown_minutes: int = 30
     max_trades_per_day: int = 10
     stop_loss_pct: float = 3.0
+    max_take_profit_pct: float = 50.0
+    max_directional_exposure_pct: float = 20.0
     kill_switch_drawdown_pct: float = 5.0
     fee_rate: float = 0.001  # 0.1% per trade (Binance default)
 

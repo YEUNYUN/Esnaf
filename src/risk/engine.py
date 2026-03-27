@@ -64,7 +64,7 @@ class RiskEngine:
                 "Manual reset required.",
             )
 
-        if abs(portfolio.daily_pnl_pct) >= self.config.kill_switch_drawdown_pct:
+        if portfolio.daily_pnl_pct <= -self.config.kill_switch_drawdown_pct:
             self._kill_switch_active = True
             logger.critical(
                 "kill_switch_triggered",
@@ -78,7 +78,7 @@ class RiskEngine:
             )
 
         # Daily drawdown limit
-        if abs(portfolio.daily_pnl_pct) >= self.config.max_daily_drawdown_pct:
+        if portfolio.daily_pnl_pct <= -self.config.max_daily_drawdown_pct:
             return ValidationResult(
                 passed=False,
                 reason=f"Daily drawdown {portfolio.daily_pnl_pct:.1f}% "
@@ -152,6 +152,40 @@ class RiskEngine:
                 f"between trades",
             )
 
+        # Net directional exposure check
+        net_long, net_short = self._calculate_directional_exposure(portfolio)
+        max_dir = portfolio.total_value * (self.config.max_directional_exposure_pct / 100)
+        if proposal.action == Action.BUY and net_long + position_value > max_dir:
+            return ValidationResult(
+                passed=False,
+                reason=f"Net long exposure ${net_long + position_value:.2f} "
+                f"would exceed directional limit ${max_dir:.2f} "
+                f"({self.config.max_directional_exposure_pct}%)",
+            )
+        if proposal.action == Action.SELL and net_short + position_value > max_dir:
+            return ValidationResult(
+                passed=False,
+                reason=f"Net short exposure ${net_short + position_value:.2f} "
+                f"would exceed directional limit ${max_dir:.2f} "
+                f"({self.config.max_directional_exposure_pct}%)",
+            )
+
+        # Stop-loss percentage check
+        if proposal.stop_loss_pct and proposal.stop_loss_pct > self.config.stop_loss_pct:
+            return ValidationResult(
+                passed=False,
+                reason=f"Stop-loss {proposal.stop_loss_pct:.1f}% exceeds max "
+                f"allowed {self.config.stop_loss_pct}%",
+            )
+
+        # Take-profit sanity check
+        if proposal.take_profit_pct and proposal.take_profit_pct > self.config.max_take_profit_pct:
+            return ValidationResult(
+                passed=False,
+                reason=f"Take-profit {proposal.take_profit_pct:.1f}% exceeds max "
+                f"allowed {self.config.max_take_profit_pct}%",
+            )
+
         # Available capital check
         if proposal.action == Action.BUY and position_value > portfolio.available_capital:
             return ValidationResult(
@@ -187,6 +221,21 @@ class RiskEngine:
     @property
     def is_kill_switch_active(self) -> bool:
         return self._kill_switch_active
+
+    def _calculate_directional_exposure(
+        self, portfolio: PortfolioState
+    ) -> tuple[float, float]:
+        """Calculate net long and net short exposure from open positions."""
+        net_long = 0.0
+        net_short = 0.0
+        for p in portfolio.open_positions:
+            value = abs(p.get("value", 0))
+            side = p.get("side", "long")
+            if side == "short":
+                net_short += value
+            else:
+                net_long += value
+        return net_long, net_short
 
     def _is_counter_trend(
         self, proposal: TradeProposal, regime: RegimeClassification

@@ -191,6 +191,7 @@ async def run() -> None:
     # Main loop
     cycle_num = 0
     consecutive_failures = 0
+    current_date = datetime.now(UTC).date()
     state: AgentState = {}
 
     # Load memory from DB for continuity across restarts
@@ -208,6 +209,28 @@ async def run() -> None:
     try:
         while not _shutdown.is_set():
             cycle_num += 1
+
+            # ── Daily stats reset at midnight UTC ────────────────────
+            today = datetime.now(UTC).date()
+            if today != current_date:
+                try:
+                    price = await market_client.fetch_price(
+                        settings.agent.trading_pair,
+                    )
+                    await broker.reset_daily_stats(price)
+                    logger.info(
+                        "daily_stats_reset",
+                        previous_date=str(current_date),
+                        new_date=str(today),
+                        reset_price=price,
+                    )
+                    console.print(
+                        f"  [cyan]Daily stats reset for {today} "
+                        f"(price ${price:,.2f})[/]"
+                    )
+                except Exception as e:
+                    logger.error("daily_reset_failed", error=str(e))
+                current_date = today
 
             # ── Consecutive-failure back-off ─────────────────────────
             if consecutive_failures >= _CONSECUTIVE_FAILURE_PAUSE_THRESHOLD:
@@ -347,7 +370,7 @@ async def run() -> None:
 
         market = state.get("market")
         price = market.price if market else 0
-        portfolio = broker.get_portfolio_state(price)
+        portfolio = await broker.get_portfolio_state(price)
         console.print(f"  Final portfolio value: [bold]${portfolio.total_value:,.2f}[/]")
         console.print(f"  Total P&L: [{'green' if portfolio.total_pnl >= 0 else 'red'}]{portfolio.total_pnl:+.2f}[/]")
         console.print(f"  Cycles completed: {cycle_num}")

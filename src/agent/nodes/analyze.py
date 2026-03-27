@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import structlog
 
+from src.agent.sanitize import sanitize_prompt_input
 from src.agent.state import (
     Action,
     AgentState,
@@ -134,9 +135,11 @@ async def analyze_node(
     prompt = TRADE_ANALYSIS_PROMPT.format(
         regime=regime.regime.value,
         regime_confidence=regime.regime_confidence,
-        regime_reasoning=regime.regime_reasoning,
+        regime_reasoning=sanitize_prompt_input(regime.regime_reasoning, max_length=500),
         strategy=regime.recommended_strategy.value,
-        narratives=", ".join(regime.active_narratives) or "None detected",
+        narratives=", ".join(
+            sanitize_prompt_input(n, max_length=50) for n in regime.active_narratives
+        ) or "None detected",
         symbol=market.symbol if market else "BTC/USDT",
         price=market.price if market else 0,
         rsi=f"{market.rsi:.1f}" if market and market.rsi is not None else "N/A",

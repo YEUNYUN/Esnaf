@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import structlog
 
+from src.agent.sanitize import sanitize_prompt_input
 from src.storage.database import Database
 
 logger = structlog.get_logger()
@@ -29,10 +30,10 @@ class AgentMemory:
         """
         memories = await self._db.get_recent_memories(limit=self._max_context)
 
-        # Format as simple strings for prompt inclusion
+        # Format as simple strings for prompt inclusion (sanitized)
         entries = []
         for mem in memories:
-            content = mem.get("content", "")
+            content = sanitize_prompt_input(mem.get("content", ""))
             entry_type = mem.get("entry_type", "lesson")
             if content:
                 entries.append(f"[{entry_type}] {content}")

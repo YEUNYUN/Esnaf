@@ -63,10 +63,20 @@ async def execute_node(
 
     # Execute via broker
     current_price = market.price if market else 0.0
-    result = broker.execute(proposal, current_price)
+    result = await broker.execute(proposal, current_price)
 
     if result.get("status") == "filled":
         risk_engine.record_trade()
+
+        is_short = proposal.action == Action.SELL
+        if proposal.stop_loss_pct:
+            stop_loss = current_price * (1 + proposal.stop_loss_pct / 100) if is_short else current_price * (1 - proposal.stop_loss_pct / 100)
+        else:
+            stop_loss = None
+        if proposal.take_profit_pct:
+            take_profit = current_price * (1 - proposal.take_profit_pct / 100) if is_short else current_price * (1 + proposal.take_profit_pct / 100)
+        else:
+            take_profit = None
 
         await db.log_trade(
             cycle_id=cycle_id,
@@ -77,8 +87,8 @@ async def execute_node(
             quantity=result.get("quantity", 0.0),
             value=result.get("value", 0.0),
             fee=result.get("fee", 0.0),
-            stop_loss=current_price * (1 - proposal.stop_loss_pct / 100) if proposal.stop_loss_pct else None,
-            take_profit=current_price * (1 + proposal.take_profit_pct / 100) if proposal.take_profit_pct else None,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             regime=regime.regime.value if regime else None,
             strategy=regime.recommended_strategy.value if regime else None,
             confidence=proposal.confidence,

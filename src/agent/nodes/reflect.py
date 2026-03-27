@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from src.agent.sanitize import sanitize_prompt_input
 from src.agent.state import AgentState, ReflectionEntry
 from src.llm.client import LLMClient
 from src.storage.database import Database
@@ -92,7 +93,8 @@ async def reflect_node(
     # ── Build prompt based on trade outcome ─────────────────────────────
     recent_trades = await db.get_recent_trades(limit=5)
     trades_text = "No recent trades" if not recent_trades else "\n".join(
-        f"- {t['action']} {t['symbol']} at ${t['price']:,.2f} — {t.get('reasoning', 'N/A')[:80]}"
+        f"- {t['action']} {t['symbol']} at ${t['price']:,.2f} — "
+        f"{sanitize_prompt_input(t.get('reasoning', 'N/A'), max_length=80)}"
         for t in recent_trades
     )
 
@@ -102,7 +104,9 @@ async def reflect_node(
             regime=regime.regime.value if regime else "unknown",
             regime_confidence=regime.regime_confidence if regime else 0,
             action=proposal.action.value,
-            validation_reason=state.get("validation_reason", "N/A"),
+            validation_reason=sanitize_prompt_input(
+                state.get("validation_reason", "N/A"), max_length=300
+            ),
         )
         reflection_type = "rejection"
     else:
@@ -112,7 +116,9 @@ async def reflect_node(
             regime_confidence=regime.regime_confidence if regime else 0,
             action=proposal.action.value,
             validation="PASSED",
-            validation_reason=state.get("validation_reason", "N/A"),
+            validation_reason=sanitize_prompt_input(
+                state.get("validation_reason", "N/A"), max_length=300
+            ),
             execution_status=execution_result.get("status", "N/A"),
             recent_trades=trades_text,
             total_value=portfolio.total_value if portfolio else 0,

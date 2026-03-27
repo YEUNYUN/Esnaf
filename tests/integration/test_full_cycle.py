@@ -135,7 +135,7 @@ async def test_full_cycle_buy_approved(tmp_path):
     assert db.log_trade.called
 
     # Verify broker has a position
-    portfolio = broker.get_portfolio_state(67500.0)
+    portfolio = await broker.get_portfolio_state(67500.0)
     assert len(portfolio.open_positions) == 1
 
 
@@ -198,5 +198,5 @@ async def test_full_cycle_sit_out():
     assert result["regime"].recommended_strategy.value == "sit_out"
     # Should not have executed any trade
     assert not db.log_trade.called
-    portfolio = broker.get_portfolio_state(67500.0)
+    portfolio = await broker.get_portfolio_state(67500.0)
     assert len(portfolio.open_positions) == 0

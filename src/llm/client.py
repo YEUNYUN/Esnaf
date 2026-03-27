@@ -14,6 +14,7 @@ from typing import Any
 
 import litellm
 import structlog
+import tiktoken
 
 from src.agent.state import MarketSnapshot, PortfolioState
 from src.config import LLMConfig
@@ -47,6 +48,9 @@ _FATAL_ERRORS = (
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 2  # Exponential backoff: 2s, 4s, 8s
 _REQUEST_TIMEOUT = 30  # seconds
+_DEFAULT_MAX_PROMPT_TOKENS = 6000
+
+_tiktoken_enc = tiktoken.get_encoding("cl100k_base")
 
 
 class LLMRouter:
@@ -101,9 +105,60 @@ class LLMRouter:
 class LLMClient:
     """Unified LLM client wrapping LiteLLM for structured output."""
 
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        max_prompt_tokens: int = _DEFAULT_MAX_PROMPT_TOKENS,
+    ) -> None:
         self._config = config
         self.router = LLMRouter(config)
+        self._max_prompt_tokens = max_prompt_tokens
+
+    @staticmethod
+    def _count_tokens(text: str) -> int:
+        """Count tokens using the cl100k_base encoding."""
+        return len(_tiktoken_enc.encode(text))
+
+    def _truncate_messages(
+        self,
+        messages: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Truncate messages to fit within *max_prompt_tokens*.
+
+        Strategy: keep system message intact, trim user message content
+        from the end (oldest context is typically at the bottom of the
+        formatted prompt, but trimming from the end is safest for
+        preventing crashes).
+        """
+        total = sum(self._count_tokens(m.get("content", "")) for m in messages)
+        if total <= self._max_prompt_tokens:
+            return messages
+
+        logger.warning(
+            "prompt_truncated",
+            original_tokens=total,
+            limit=self._max_prompt_tokens,
+        )
+
+        # Work on a shallow copy so callers aren't affected
+        messages = [dict(m) for m in messages]
+        overflow = total - self._max_prompt_tokens
+
+        # Trim from the last user message backwards
+        for msg in reversed(messages):
+            if msg["role"] != "user":
+                continue
+            content = msg["content"]
+            tokens = _tiktoken_enc.encode(content)
+            if len(tokens) <= overflow:
+                overflow -= len(tokens)
+                msg["content"] = ""
+            else:
+                tokens = tokens[: len(tokens) - overflow]
+                msg["content"] = _tiktoken_enc.decode(tokens)
+                break
+
+        return messages
 
     async def _call_with_retry(self, kwargs: dict[str, Any]) -> str:
         """Call litellm.acompletion with retry logic for transient errors.
@@ -177,6 +232,9 @@ class LLMClient:
             The LLM's response text
         """
         model = model or self._config.primary_model
+
+        # Enforce token limits before calling the LLM
+        messages = self._truncate_messages(messages)
 
         kwargs: dict[str, Any] = {
             "model": model,
