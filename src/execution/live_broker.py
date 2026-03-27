@@ -51,6 +51,7 @@ class LivePosition:
     opened_at: str = ""
     unrealized_pnl: float = 0.0
     order_id: str = ""
+    stop_order_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -125,6 +126,9 @@ class LiveBroker:
 
     async def get_portfolio_state(self, current_price: float) -> PortfolioState:
         """Fetch balance from exchange and merge with local position tracking."""
+        # Reconcile with exchange — detect protective orders filled externally
+        await self._sync_exchange_orders()
+
         await self._check_stops(current_price)
 
         for pos in self._positions:
@@ -244,6 +248,9 @@ class LiveBroker:
         self._positions.append(position)
         self._daily_trades += 1
 
+        # Place exchange-side protective orders (OCO or stop-loss-limit)
+        await self._place_protective_orders(position)
+
         result = {
             "status": "filled",
             "position_id": position.id,
@@ -325,6 +332,9 @@ class LiveBroker:
         self._positions.append(position)
         self._daily_trades += 1
 
+        # Place exchange-side protective orders (OCO or stop-loss-limit)
+        await self._place_protective_orders(position)
+
         result = {
             "status": "filled",
             "position_id": position.id,
@@ -352,6 +362,9 @@ class LiveBroker:
         closed_count = 0
 
         for pos in to_close:
+            # Cancel exchange-side protective orders before closing
+            await self._cancel_protective_orders(pos)
+
             close_side = "sell" if side == "long" else "buy"
             try:
                 order = await self._create_market_order(pos.symbol, close_side, pos.quantity)
@@ -394,7 +407,13 @@ class LiveBroker:
     # ------------------------------------------------------------------
 
     async def _check_stops(self, current_price: float) -> None:
-        """Check and trigger stops for all positions (single-price mode)."""
+        """Check and trigger stops for all positions (single-price mode).
+
+        NOTE: This is a software-side fallback. Primary protection is via
+        exchange-side OCO / stop-loss-limit orders placed in
+        _place_protective_orders(). This method catches anything that
+        slips through (e.g., if exchange orders failed to place).
+        """
         triggers: list[tuple[str, str, str]] = []  # (side, reason, symbol)
 
         for pos in self._positions:
@@ -444,6 +463,200 @@ class LiveBroker:
                 results.append(result)
                 closed_sides.add(side)
         return results
+
+    # ------------------------------------------------------------------
+    # Private — exchange-side protective orders (OCO / stop-loss-limit)
+    # ------------------------------------------------------------------
+
+    async def _place_protective_orders(self, position: LivePosition) -> list[str]:
+        """Place exchange-side protective orders (OCO or stop-loss-limit fallback).
+
+        Strategy:
+        1. Try OCO order (combines TP limit + SL stop-limit, one cancels other)
+        2. If OCO fails, try stop-loss-limit only (more critical than TP)
+        3. If that also fails, log warning — software-side _check_stops() is fallback
+        Returns list of order IDs placed on exchange.
+        """
+        if not position.stop_loss or not position.take_profit:
+            logger.info(
+                "protective_orders_skipped_no_levels",
+                position_id=position.id,
+            )
+            return []
+
+        assert self._exchange is not None
+        symbol_raw = position.symbol.replace("/", "")
+        order_ids: list[str] = []
+
+        # Determine order direction: long positions need sell-side protection,
+        # short positions need buy-side protection.
+        if position.side == "long":
+            oco_side = "SELL"
+            # SL limit price slightly below trigger for slippage buffer
+            sl_limit_price = position.stop_loss * 0.995
+        else:
+            oco_side = "BUY"
+            # SL limit price slightly above trigger for slippage buffer
+            sl_limit_price = position.stop_loss * 1.005
+
+        # --- Attempt 1: OCO order ---
+        try:
+            oco_result = await asyncio.to_thread(
+                self._exchange.private_post_order_oco,
+                {
+                    "symbol": symbol_raw,
+                    "side": oco_side,
+                    "quantity": position.quantity,
+                    "price": str(position.take_profit),
+                    "stopPrice": str(position.stop_loss),
+                    "stopLimitPrice": str(sl_limit_price),
+                    "stopLimitTimeInForce": "GTC",
+                },
+            )
+            for o in oco_result.get("orderReports", []):
+                oid = str(o.get("orderId", ""))
+                if oid:
+                    order_ids.append(oid)
+            if not order_ids:
+                oco_list_id = str(oco_result.get("orderListId", ""))
+                if oco_list_id:
+                    order_ids.append(oco_list_id)
+            logger.info(
+                "protective_oco_placed",
+                position_id=position.id,
+                symbol=position.symbol,
+                order_ids=order_ids,
+            )
+            position.stop_order_ids = order_ids
+            return order_ids
+        except (ccxt.InvalidOrder, ccxt.ExchangeError) as exc:
+            logger.warning(
+                "protective_oco_failed",
+                position_id=position.id,
+                error=str(exc),
+            )
+
+        # --- Attempt 2: Stop-loss-limit only ---
+        try:
+            sl_order = await asyncio.to_thread(
+                self._exchange.create_order,
+                position.symbol,
+                "STOP_LOSS_LIMIT",
+                oco_side.lower(),
+                position.quantity,
+                sl_limit_price,
+                {"stopPrice": position.stop_loss, "timeInForce": "GTC"},
+            )
+            oid = str(sl_order.get("id", ""))
+            if oid:
+                order_ids.append(oid)
+            logger.info(
+                "protective_stop_loss_placed",
+                position_id=position.id,
+                symbol=position.symbol,
+                order_id=oid,
+            )
+            position.stop_order_ids = order_ids
+            return order_ids
+        except (ccxt.InvalidOrder, ccxt.ExchangeError) as exc:
+            logger.warning(
+                "protective_stop_loss_failed_software_fallback",
+                position_id=position.id,
+                error=str(exc),
+            )
+
+        # --- Fallback: software-side stops remain active via _check_stops() ---
+        return []
+
+    async def _cancel_protective_orders(self, position: LivePosition) -> None:
+        """Cancel all exchange-side protective orders for a position.
+
+        Gracefully handles orders that have already been filled or canceled.
+        """
+        if not position.stop_order_ids:
+            return
+
+        assert self._exchange is not None
+        for oid in position.stop_order_ids:
+            try:
+                await asyncio.to_thread(
+                    self._exchange.cancel_order, oid, position.symbol,
+                )
+                logger.info(
+                    "protective_order_canceled",
+                    position_id=position.id,
+                    order_id=oid,
+                )
+            except (ccxt.OrderNotFound, ccxt.InvalidOrder):
+                logger.info(
+                    "protective_order_already_gone",
+                    position_id=position.id,
+                    order_id=oid,
+                )
+            except ccxt.ExchangeError as exc:
+                logger.warning(
+                    "protective_order_cancel_error",
+                    position_id=position.id,
+                    order_id=oid,
+                    error=str(exc),
+                )
+        position.stop_order_ids = []
+
+    async def _sync_exchange_orders(self) -> None:
+        """Reconcile local state with exchange — detect filled protective orders.
+
+        Called at the start of each cycle. If a protective stop-loss or
+        take-profit was filled on the exchange, update local tracking.
+        """
+        assert self._exchange is not None
+        positions_to_remove: list[LivePosition] = []
+
+        for pos in self._positions:
+            if not pos.stop_order_ids:
+                continue
+            for oid in pos.stop_order_ids:
+                try:
+                    order = await asyncio.to_thread(
+                        self._exchange.fetch_order, oid, pos.symbol,
+                    )
+                except (ccxt.OrderNotFound, ccxt.ExchangeError) as exc:
+                    logger.warning(
+                        "sync_order_fetch_error",
+                        order_id=oid,
+                        error=str(exc),
+                    )
+                    continue
+
+                if order.get("status") == "closed" and order.get("filled", 0) > 0:
+                    fill_price = (
+                        order.get("average")
+                        or order.get("price")
+                        or pos.entry_price
+                    )
+                    fee_info = order.get("fee") or {}
+                    fee_cost = float(fee_info.get("cost", 0.0) or 0.0)
+
+                    if pos.side == "long":
+                        pnl = (fill_price - pos.entry_price) * order["filled"]
+                    else:
+                        pnl = (pos.entry_price - fill_price) * order["filled"]
+
+                    net_pnl = pnl - fee_cost
+                    self._total_pnl += net_pnl
+
+                    logger.info(
+                        "protective_order_filled",
+                        position_id=pos.id,
+                        order_id=oid,
+                        fill_price=fill_price,
+                        pnl=net_pnl,
+                    )
+                    positions_to_remove.append(pos)
+                    break  # position handled, no need to check other orders
+
+        for pos in positions_to_remove:
+            if pos in self._positions:
+                self._positions.remove(pos)
 
     # ------------------------------------------------------------------
     # Private — CCXT wrappers (all via asyncio.to_thread)

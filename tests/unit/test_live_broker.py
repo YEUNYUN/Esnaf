@@ -349,3 +349,247 @@ class TestCloseNoPositions:
             _make_proposal(Action.CLOSE_SHORT), current_price=50000.0
         )
         assert result["status"] == "no_positions"
+
+
+# ---------------------------------------------------------------------------
+# Exchange-side protective orders
+# ---------------------------------------------------------------------------
+
+class TestProtectiveOrders:
+    """Tests for OCO / stop-loss-limit protective order placement."""
+
+    @pytest.mark.asyncio
+    async def test_protective_orders_called_after_long_fill(
+        self, broker: LiveBroker,
+    ) -> None:
+        """_place_protective_orders is invoked after a successful long fill."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderListId": "999",
+            "orderReports": [
+                {"orderId": "oco-sl"},
+                {"orderId": "oco-tp"},
+            ],
+        }
+
+        result = await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        assert result["status"] == "filled"
+        broker._exchange.private_post_order_oco.assert_called_once()
+        pos = broker._positions[0]
+        assert pos.stop_order_ids == ["oco-sl", "oco-tp"]
+
+    @pytest.mark.asyncio
+    async def test_protective_orders_called_after_short_fill(
+        self, broker: LiveBroker,
+    ) -> None:
+        """_place_protective_orders is invoked after a successful short fill."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order(side="sell")
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderListId": "888",
+            "orderReports": [
+                {"orderId": "oco-sl-short"},
+                {"orderId": "oco-tp-short"},
+            ],
+        }
+
+        result = await broker.execute(
+            _make_proposal(Action.SELL), current_price=50000.0,
+        )
+
+        assert result["status"] == "filled"
+        broker._exchange.private_post_order_oco.assert_called_once()
+        call_params = broker._exchange.private_post_order_oco.call_args[0][0]
+        assert call_params["side"] == "BUY"  # opposite side for short protection
+        pos = broker._positions[0]
+        assert pos.stop_order_ids == ["oco-sl-short", "oco-tp-short"]
+
+    @pytest.mark.asyncio
+    async def test_oco_fallback_to_stop_loss_limit(
+        self, broker: LiveBroker,
+    ) -> None:
+        """When OCO fails, falls back to a stop-loss-limit order."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.side_effect = [
+            _make_order(),  # market buy succeeds
+            {"id": "sl-only-123", "status": "open"},  # stop-loss-limit
+        ]
+        broker._exchange.private_post_order_oco.side_effect = ccxt.InvalidOrder(
+            "OCO not allowed"
+        )
+
+        result = await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        assert result["status"] == "filled"
+        # OCO tried and failed
+        broker._exchange.private_post_order_oco.assert_called_once()
+        # create_order called twice: market buy + stop-loss-limit fallback
+        assert broker._exchange.create_order.call_count == 2
+        second_call = broker._exchange.create_order.call_args_list[1]
+        assert second_call[0][1] == "STOP_LOSS_LIMIT"
+        pos = broker._positions[0]
+        assert pos.stop_order_ids == ["sl-only-123"]
+
+    @pytest.mark.asyncio
+    async def test_all_protective_orders_fail_software_fallback(
+        self, broker: LiveBroker,
+    ) -> None:
+        """When both OCO and stop-loss-limit fail, software stops remain."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.side_effect = [
+            _make_order(),  # market buy succeeds
+            ccxt.ExchangeError("stop loss rejected"),  # SL limit fails
+        ]
+        broker._exchange.private_post_order_oco.side_effect = ccxt.ExchangeError(
+            "OCO rejected"
+        )
+
+        result = await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        assert result["status"] == "filled"
+        pos = broker._positions[0]
+        assert pos.stop_order_ids == []
+        # Software-side stops still present
+        assert pos.stop_loss is not None
+        assert pos.take_profit is not None
+
+
+class TestCancelProtectiveOrders:
+    """Tests for canceling protective orders on position close."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_protective_orders_on_close(
+        self, broker: LiveBroker,
+    ) -> None:
+        """Protective orders are canceled before a position is closed."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderReports": [{"orderId": "oco-1"}, {"orderId": "oco-2"}],
+        }
+
+        await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+        assert broker._positions[0].stop_order_ids == ["oco-1", "oco-2"]
+
+        # Now close the position
+        close_order = _make_order(order_id="close-456", side="sell")
+        broker._exchange.create_order.return_value = close_order
+        # Avoid OCO placement during close (no new protective orders)
+        broker._exchange.cancel_order.return_value = {}
+
+        await broker.execute(
+            _make_proposal(Action.CLOSE_LONG), current_price=51000.0,
+        )
+
+        assert len(broker._positions) == 0
+        assert broker._exchange.cancel_order.call_count == 2
+        cancel_calls = [c[0] for c in broker._exchange.cancel_order.call_args_list]
+        assert ("oco-1", "BTC/USDT") in cancel_calls
+        assert ("oco-2", "BTC/USDT") in cancel_calls
+
+    @pytest.mark.asyncio
+    async def test_cancel_handles_order_already_filled(
+        self, broker: LiveBroker,
+    ) -> None:
+        """Canceling an already-filled order doesn't raise."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderReports": [{"orderId": "gone-1"}, {"orderId": "gone-2"}],
+        }
+
+        await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        # Simulate one already filled, one not found
+        broker._exchange.cancel_order.side_effect = [
+            ccxt.OrderNotFound("already filled"),
+            ccxt.InvalidOrder("already canceled"),
+        ]
+        close_order = _make_order(order_id="close-789", side="sell")
+        broker._exchange.create_order.return_value = close_order
+
+        # Should not raise
+        result = await broker.execute(
+            _make_proposal(Action.CLOSE_LONG), current_price=51000.0,
+        )
+        assert result["status"] == "closed"
+
+
+class TestSyncExchangeOrders:
+    """Tests for _sync_exchange_orders detecting filled protective orders."""
+
+    @pytest.mark.asyncio
+    async def test_sync_detects_filled_stop_loss(
+        self, broker: LiveBroker,
+    ) -> None:
+        """A filled stop-loss on exchange removes the local position."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderReports": [{"orderId": "sl-100"}, {"orderId": "tp-101"}],
+        }
+
+        await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+        assert len(broker._positions) == 1
+
+        # Simulate the stop-loss being filled on exchange
+        broker._exchange.fetch_order.return_value = {
+            "id": "sl-100",
+            "status": "closed",
+            "filled": 0.006,
+            "average": 48000.0,
+            "price": 48000.0,
+            "fee": {"cost": 0.3, "currency": "USDT"},
+        }
+
+        state = await broker.get_portfolio_state(48000.0)
+
+        # Position should be removed after sync
+        assert len(broker._positions) == 0
+        assert len(state.open_positions) == 0
+
+    @pytest.mark.asyncio
+    async def test_sync_ignores_open_orders(
+        self, broker: LiveBroker,
+    ) -> None:
+        """Open (unfilled) protective orders don't affect positions."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderReports": [{"orderId": "sl-200"}],
+        }
+
+        await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        # Order is still open on exchange
+        broker._exchange.fetch_order.return_value = {
+            "id": "sl-200",
+            "status": "open",
+            "filled": 0,
+        }
+
+        state = await broker.get_portfolio_state(50000.0)
+
+        assert len(broker._positions) == 1
+        assert len(state.open_positions) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_handles_fetch_order_error(
+        self, broker: LiveBroker,
+    ) -> None:
+        """Exchange errors during sync don't crash the system."""
+        broker._exchange.fetch_balance.return_value = _make_balance()
+        broker._exchange.create_order.return_value = _make_order()
+        broker._exchange.private_post_order_oco.return_value = {
+            "orderReports": [{"orderId": "err-300"}],
+        }
+
+        await broker.execute(_make_proposal(Action.BUY), current_price=50000.0)
+
+        broker._exchange.fetch_order.side_effect = ccxt.ExchangeError("gone")
+
+        # Should not raise — position stays
+        await broker.get_portfolio_state(50000.0)
+        assert len(broker._positions) == 1
