@@ -23,6 +23,7 @@ from src.agent.router import select_model
 from src.agent.state import AgentState, Strategy
 from src.config import Settings
 from src.data.market import MarketDataClient
+from src.data.sentiment import SentimentPipeline
 from src.execution.paper_broker import PaperBroker
 from src.llm.client import LLMClient
 from src.risk.engine import RiskEngine
@@ -86,6 +87,7 @@ def build_graph(
     llm_client: LLMClient,
     risk_engine: RiskEngine,
     db: Database,
+    sentiment_pipeline: SentimentPipeline | None = None,
 ):
     """Build and compile the LangGraph workflow.
 
@@ -103,6 +105,7 @@ def build_graph(
             gather_node,
             market_client=market_client,
             broker=broker,
+            sentiment_pipeline=sentiment_pipeline,
             symbol=settings.agent.trading_pair,
         ),
     )

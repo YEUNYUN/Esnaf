@@ -14,6 +14,7 @@ import structlog
 from src.agent.state import AgentState, MarketSnapshot, PortfolioState, SentimentData
 from src.data.indicators import compute_indicators
 from src.data.market import MarketDataClient
+from src.data.sentiment import SentimentPipeline
 from src.execution.paper_broker import PaperBroker
 
 logger = structlog.get_logger()
@@ -24,6 +25,7 @@ async def gather_node(
     *,
     market_client: MarketDataClient,
     broker: PaperBroker,
+    sentiment_pipeline: SentimentPipeline | None = None,
     symbol: str,
 ) -> dict:
     """Gather all market data for this analysis cycle.
@@ -42,8 +44,11 @@ async def gather_node(
         # Get current portfolio state
         portfolio = broker.get_portfolio_state(snapshot.price)
 
-        # Get sentiment (placeholder — will be wired in Phase 2)
-        sentiment = SentimentData()
+        # Get sentiment (from real APIs if pipeline is wired)
+        if sentiment_pipeline:
+            sentiment = await sentiment_pipeline.fetch()
+        else:
+            sentiment = SentimentData()
 
         logger.info(
             "gather_complete",

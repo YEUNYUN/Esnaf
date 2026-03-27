@@ -18,6 +18,7 @@ from src.agent.graph import build_graph
 from src.agent.state import AgentState
 from src.config import load_settings
 from src.data.market import MarketDataClient
+from src.data.sentiment import SentimentPipeline
 from src.execution.paper_broker import PaperBroker
 from src.llm.client import LLMClient
 from src.risk.engine import RiskEngine
@@ -104,6 +105,7 @@ async def run() -> None:
 
     llm_client = LLMClient(settings.llm)
     risk_engine = RiskEngine(settings.risk)
+    sentiment = SentimentPipeline()
 
     # Build the LangGraph workflow
     graph = build_graph(
@@ -113,6 +115,7 @@ async def run() -> None:
         llm_client=llm_client,
         risk_engine=risk_engine,
         db=db,
+        sentiment_pipeline=sentiment,
     )
 
     console.print("[green]All components initialized ✓[/]")

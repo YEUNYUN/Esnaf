@@ -1,0 +1,85 @@
+"""Agent memory system — persistent lessons and pattern recognition.
+
+The agent stores lessons learned from each trading cycle and loads
+them into future prompts. This is how the agent "learns" over time
+without fine-tuning — it's prompt-based learning via retrieved memory.
+"""
+
+from __future__ import annotations
+
+import structlog
+
+from src.storage.database import Database
+
+logger = structlog.get_logger()
+
+
+class AgentMemory:
+    """Manages the agent's persistent memory for learning across cycles."""
+
+    def __init__(self, db: Database, max_context_entries: int = 15) -> None:
+        self._db = db
+        self._max_context = max_context_entries
+
+    async def get_context(self) -> list[str]:
+        """Retrieve recent memories formatted for inclusion in LLM prompts.
+
+        Returns the most recent lessons as a flat list of strings.
+        Limited to max_context_entries to manage prompt size.
+        """
+        memories = await self._db.get_recent_memories(limit=self._max_context)
+
+        # Format as simple strings for prompt inclusion
+        entries = []
+        for mem in memories:
+            content = mem.get("content", "")
+            entry_type = mem.get("entry_type", "lesson")
+            if content:
+                entries.append(f"[{entry_type}] {content}")
+
+        logger.debug("memory_loaded", count=len(entries))
+        return entries
+
+    async def add_lesson(self, lesson: str, metadata: dict | None = None) -> None:
+        """Store a new lesson learned from trading experience."""
+        await self._db.add_memory(
+            entry_type="lesson",
+            content=lesson,
+            metadata=metadata,
+        )
+        logger.info("lesson_stored", content=lesson[:80])
+
+    async def add_pattern(self, pattern: str, metadata: dict | None = None) -> None:
+        """Store a recognized pattern."""
+        await self._db.add_memory(
+            entry_type="pattern",
+            content=pattern,
+            metadata=metadata,
+        )
+        logger.info("pattern_stored", content=pattern[:80])
+
+    async def get_regime_history_summary(self, limit: int = 20) -> str:
+        """Get a summary of recent regime classifications for context."""
+        # Use the database directly to get regime history
+        assert self._db._db is not None
+        cursor = await self._db._db.execute(
+            "SELECT regime, confidence, strategy FROM regime_history ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+
+        if not rows:
+            return "No prior regime classifications."
+
+        # Count regime frequencies
+        regime_counts: dict[str, int] = {}
+        for row in rows:
+            r = dict(row)["regime"]
+            regime_counts[r] = regime_counts.get(r, 0) + 1
+
+        total = len(rows)
+        summary_parts = [f"Last {total} classifications:"]
+        for regime, count in sorted(regime_counts.items(), key=lambda x: -x[1]):
+            summary_parts.append(f"  {regime}: {count}/{total} ({count/total:.0%})")
+
+        return "\n".join(summary_parts)
