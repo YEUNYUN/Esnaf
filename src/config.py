@@ -30,7 +30,7 @@ class LLMConfig(BaseSettings):
 
     # Model identifiers for LiteLLM
     primary_model: str = "openai/claude-sonnet-4-20250514"  # Via Copilot proxy
-    cheap_model: str = "gemini/gemini-2.0-flash"
+    cheap_model: str = "gemini/gemini-2.5-flash"
     fallback_model: str = "ollama/llama3.1"
 
     # Routing thresholds

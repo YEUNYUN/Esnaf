@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import json
+import logging
 import sys
 
 from dotenv import load_dotenv
@@ -134,7 +135,7 @@ async def run() -> None:
 
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.get_level_from_name(settings.agent.log_level)
+            logging.getLevelName(settings.agent.log_level)
         ),
     )
 

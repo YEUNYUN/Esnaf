@@ -124,14 +124,29 @@ async def classify_node(
 
         result = await llm_client.complete_json(messages, model=model)
 
-        # Parse into our schema
+        # Parse enum fields robustly — LLMs sometimes invent values
+        try:
+            narrative = NarrativeStage(result.get("narrative_stage", "early"))
+        except ValueError:
+            narrative = NarrativeStage.EARLY
+
+        try:
+            regime_val = Regime(result.get("regime", "unknown"))
+        except ValueError:
+            regime_val = Regime.UNKNOWN
+
+        try:
+            strategy_val = Strategy(result.get("recommended_strategy", "sit_out"))
+        except ValueError:
+            strategy_val = Strategy.SIT_OUT
+
         regime = RegimeClassification(
-            regime=Regime(result.get("regime", "unknown")),
+            regime=regime_val,
             regime_confidence=float(result.get("regime_confidence", 0.0)),
             regime_reasoning=result.get("regime_reasoning", ""),
             active_narratives=result.get("active_narratives", []),
-            narrative_stage=NarrativeStage(result.get("narrative_stage", "early")),
-            recommended_strategy=Strategy(result.get("recommended_strategy", "sit_out")),
+            narrative_stage=narrative,
+            recommended_strategy=strategy_val,
             strategy_reasoning=result.get("strategy_reasoning", ""),
         )
 

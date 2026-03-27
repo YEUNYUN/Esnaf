@@ -164,8 +164,13 @@ async def analyze_node(
 
         result = await llm_client.complete_json(messages, model=model)
 
+        try:
+            action = Action(result.get("action", "HOLD"))
+        except ValueError:
+            action = Action.HOLD
+
         proposal = TradeProposal(
-            action=Action(result.get("action", "HOLD")),
+            action=action,
             asset=result.get("asset", market.symbol if market else "BTC/USDT"),
             confidence=float(result.get("confidence", 0.0)),
             size_suggestion=result.get("size_suggestion", "small"),
