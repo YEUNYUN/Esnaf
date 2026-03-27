@@ -166,6 +166,10 @@ async def run() -> None:
     root_logger.addHandler(console_handler)
     root_logger.setLevel(logging.DEBUG)
 
+    # Silence noisy third-party loggers on console (still captured in file)
+    for noisy in ("LiteLLM", "litellm", "httpx", "httpcore", "ccxt"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
