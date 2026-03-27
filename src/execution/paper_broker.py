@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 
@@ -147,7 +147,7 @@ class PaperBroker:
             value=value - fee,
             stop_loss=price * (1 - proposal.stop_loss_pct / 100),
             take_profit=price * (1 + proposal.take_profit_pct / 100),
-            opened_at=datetime.utcnow().isoformat(),
+            opened_at=datetime.now(UTC).isoformat(),
         )
         self._positions.append(position)
         self._daily_trades += 1
@@ -186,7 +186,7 @@ class PaperBroker:
             value=value,
             stop_loss=price * (1 + proposal.stop_loss_pct / 100),
             take_profit=price * (1 - proposal.take_profit_pct / 100),
-            opened_at=datetime.utcnow().isoformat(),
+            opened_at=datetime.now(UTC).isoformat(),
         )
         self._positions.append(position)
         self._daily_trades += 1

@@ -7,7 +7,7 @@ what it needs and writes its outputs. LangGraph handles persistence.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TypedDict
 
@@ -101,7 +101,7 @@ class ReflectionEntry(BaseModel):
 class MarketSnapshot:
     """Point-in-time market data collected by the gather node."""
 
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     symbol: str = ""
     price: float = 0.0
     ohlcv: list[list[float]] = field(default_factory=list)  # [timestamp, O, H, L, C, V]

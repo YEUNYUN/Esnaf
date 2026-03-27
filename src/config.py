@@ -43,6 +43,7 @@ class RiskConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
 
+    max_capital: float = Field(default=10000.0, alias="MAX_CAPITAL")
     max_position_pct: float = Field(default=10.0, alias="MAX_POSITION_PCT")
     max_daily_drawdown_pct: float = Field(default=3.0, alias="MAX_DAILY_DRAWDOWN_PCT")
     max_total_exposure_pct: float = 30.0
@@ -53,6 +54,7 @@ class RiskConfig(BaseSettings):
     max_trades_per_day: int = 10
     stop_loss_pct: float = 3.0
     kill_switch_drawdown_pct: float = 5.0
+    fee_rate: float = 0.001  # 0.1% per trade (Binance default)
 
 
 class AgentConfig(BaseSettings):
@@ -61,6 +63,7 @@ class AgentConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
 
     trading_pair: str = Field(default="BTC/USDT", alias="TRADING_PAIR")
+    cycle_interval_minutes: int = Field(default=15, alias="CYCLE_INTERVAL")
     analysis_interval_minutes: int = Field(default=15, alias="ANALYSIS_INTERVAL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 

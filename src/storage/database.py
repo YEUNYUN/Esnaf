@@ -7,7 +7,7 @@ Uses aiosqlite for async operations compatible with LangGraph.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -144,7 +144,7 @@ class Database:
              fee, stop_loss, take_profit, regime, strategy, confidence, reasoning)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
                 cycle_id,
                 symbol,
                 action,
@@ -188,7 +188,7 @@ class Database:
              model_used, market_snapshot, indicators)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
                 cycle_id,
                 regime,
                 regime_confidence,
@@ -221,7 +221,7 @@ class Database:
             (timestamp, cycle_id, regime, confidence, reasoning, strategy)
             VALUES (?, ?, ?, ?, ?, ?)""",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
                 cycle_id,
                 regime,
                 confidence,
@@ -240,7 +240,7 @@ class Database:
         cursor = await self._db.execute(
             "INSERT INTO memory (timestamp, entry_type, content, metadata) VALUES (?, ?, ?, ?)",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(UTC).isoformat(),
                 entry_type,
                 content,
                 json.dumps(metadata) if metadata else None,
@@ -279,7 +279,7 @@ class Database:
     async def get_daily_stats(self) -> dict:
         """Get today's trading statistics."""
         assert self._db is not None
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         cursor = await self._db.execute(
             """SELECT
                 COUNT(*) as trade_count,
