@@ -54,6 +54,31 @@ def should_execute(state: AgentState) -> Literal["execute", "skip_to_reflect"]:
     return "skip_to_reflect"
 
 
+def _make_classify_node(llm_client: LLMClient, settings: Settings):
+    """Create an async classify node with injected dependencies."""
+    async def _classify(state: AgentState) -> dict:
+        model = state.get("selected_model", settings.llm.primary_model)
+        return await classify_node(state, llm_client=llm_client, model=model)
+    return _classify
+
+
+def _make_analyze_node(llm_client: LLMClient, settings: Settings):
+    """Create an async analyze node with injected dependencies."""
+    async def _analyze(state: AgentState) -> dict:
+        model = state.get("selected_model", settings.llm.primary_model)
+        return await analyze_node(state, llm_client=llm_client, model=model)
+    return _analyze
+
+
+def _make_reflect_node(llm_client: LLMClient, settings: Settings, db: Database):
+    """Create an async reflect node with injected dependencies."""
+    async def _reflect(state: AgentState) -> dict:
+        return await reflect_node(
+            state, llm_client=llm_client, model=settings.llm.cheap_model, db=db,
+        )
+    return _reflect
+
+
 def build_graph(
     settings: Settings,
     market_client: MarketDataClient,
@@ -89,20 +114,12 @@ def build_graph(
 
     workflow.add_node(
         "classify",
-        lambda state: classify_node(
-            state,
-            llm_client=llm_client,
-            model=state.get("selected_model", settings.llm.primary_model),
-        ),
+        _make_classify_node(llm_client, settings),
     )
 
     workflow.add_node(
         "analyze",
-        lambda state: analyze_node(
-            state,
-            llm_client=llm_client,
-            model=state.get("selected_model", settings.llm.primary_model),
-        ),
+        _make_analyze_node(llm_client, settings),
     )
 
     workflow.add_node(
@@ -117,12 +134,7 @@ def build_graph(
 
     workflow.add_node(
         "reflect",
-        lambda state: reflect_node(
-            state,
-            llm_client=llm_client,
-            model=settings.llm.cheap_model,  # Reflection uses cheap model
-            db=db,
-        ),
+        _make_reflect_node(llm_client, settings, db),
     )
 
     # Define edges: the regime-first flow
