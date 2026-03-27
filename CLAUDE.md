@@ -67,6 +67,21 @@
 - **Fix**: Changed `.gitignore` from `data/` to `/data/` and committed `src/data/*.py`
 - **Lesson**: When CI can't find a module, check `git ls-files` FIRST to verify the files are actually committed. `.gitignore` patterns without `/` prefix match anywhere in the path.
 
+### 2026-03-27: Domain Expert Audit — Mistakes #10-13
+Ran a domain-expert (15yr quant trading) critique of the entire codebase. Found 20 issues, 8 critical:
+
+- **Mistake #10 — abs() in kill switch**: `abs(daily_pnl_pct)` meant GAINS triggered the kill switch. A +5% day would shut down trading. The most dangerous kind of bug: one that punishes success.
+  - **Lesson**: Always test both positive and negative edge cases for threshold checks.
+
+- **Mistake #11 — Paper↔Live broker interface mismatch**: PaperBroker was sync, LiveBroker async. Nodes called without `await`. Going live would silently return coroutine objects instead of trade results.
+  - **Lesson**: Define a protocol/ABC for broker interface. Test both implementations against it.
+
+- **Mistake #12 — Stop-losses only checked every 15 min**: Software-side stops, not exchange-side. A flash crash between cycles = unprotected positions.
+  - **Lesson**: Always place protective orders on the exchange itself, not in application code.
+
+- **Mistake #13 — Look-ahead bias in backtester**: Signals executed at same bar's close instead of next bar's open. Every backtest was optimistically biased.
+  - **Lesson**: Backtester must shift signals by 1 period. If you can see the close, you can't trade on it.
+
 ---
 
 | Decision | Chosen | Rejected | Why |
