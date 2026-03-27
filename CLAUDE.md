@@ -54,6 +54,12 @@
 - **Fix**: Reset to pending, will build them properly
 - **Lesson**: Only mark todos done AFTER verifying the code exists
 
+### 2026-03-27: Build Phase — Mistake #8
+- **Error**: CI Python 3.12 failed with `ModuleNotFoundError: No module named 'src.data'`
+- **Cause**: `pyproject.toml` lacked `[tool.setuptools.packages.find]` config — setuptools couldn't auto-discover `src/` subpackages. Worked locally by coincidence (cached/editable install)
+- **Fix**: Added `[tool.setuptools.packages.find] include = ["src*"]`
+- **Lesson**: Always explicitly configure package discovery when using a non-standard layout (`src/` as top-level package)
+
 ---
 
 | Decision | Chosen | Rejected | Why |
