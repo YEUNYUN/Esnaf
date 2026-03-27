@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
@@ -46,7 +49,7 @@ jobs:
         run: pytest tests/ --cov=src --cov-report=xml -q
 
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.13'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
