@@ -10,8 +10,8 @@ These are fetched asynchronously and combined into a SentimentData snapshot.
 
 from __future__ import annotations
 
-import structlog
 from httpx import AsyncClient, HTTPError
+import structlog
 
 from src.agent.state import SentimentData
 
