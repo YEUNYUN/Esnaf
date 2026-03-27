@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --pre -e ".[dev]"
+          python -c "from src.data.indicators import compute_indicators; print('Package imports OK')"
 
       - name: Lint with ruff
         run: ruff check src/ tests/

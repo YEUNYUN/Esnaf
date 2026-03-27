@@ -2,7 +2,7 @@
 name = "esnaf"
 version = "0.1.0"
 description = "Regime-aware autonomous crypto trading agent powered by LLM reasoning"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 readme = "README.md"
 
 dependencies = [
