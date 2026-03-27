@@ -24,6 +24,8 @@ env/
 
 # Data
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 /data/
 logs/
