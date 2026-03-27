@@ -60,6 +60,13 @@
 - **Fix**: Added `[tool.setuptools.packages.find] include = ["src*"]`
 - **Lesson**: Always explicitly configure package discovery when using a non-standard layout (`src/` as top-level package)
 
+### 2026-03-27: Build Phase — Mistake #9
+- **Error**: CI still failed with `ModuleNotFoundError: No module named 'src.data'` even after adding PYTHONPATH, conftest.py, non-editable install, and package discovery config
+- **Cause**: `.gitignore` had `data/` which matched `src/data/` — all files in `src/data/` were silently ignored by git. They existed locally but were never committed. The real fix was changing `data/` to `/data/` (root-only match).
+- **Previous wrong diagnosis**: Thought it was PEP 660 editable install issues, PYTHONPATH problems, or package discovery config. Spent 6 CI runs chasing the wrong cause.
+- **Fix**: Changed `.gitignore` from `data/` to `/data/` and committed `src/data/*.py`
+- **Lesson**: When CI can't find a module, check `git ls-files` FIRST to verify the files are actually committed. `.gitignore` patterns without `/` prefix match anywhere in the path.
+
 ---
 
 | Decision | Chosen | Rejected | Why |

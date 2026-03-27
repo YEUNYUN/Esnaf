@@ -34,9 +34,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install --pre ".[dev]"
 
-      - name: Verify imports
-        run: python -c "from src.data.indicators import compute_indicators; print('OK')"
-
       - name: Lint with ruff
         run: ruff check src/ tests/
 
