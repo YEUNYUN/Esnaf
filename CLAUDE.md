@@ -42,9 +42,19 @@
 - **Fix**: Changed mock to check system message only ("regime classifier" vs "trading analyst")
 - **Lesson**: When mocking multi-call LLM flows, dispatch on system prompt (role-specific), not user content
 
----
+### 2026-03-27: Build Phase — Mistake #6
+- **Error**: CI lint (ruff import sorting) passes on Windows but fails on Ubuntu
+- **Cause**: ruff range pin `>=0.15.0,<0.16.0` resolved to different patch versions on CI vs local; different versions have subtly different isort behavior
+- **Fix**: (1) Pinned `ruff==0.15.8` exactly, (2) Added `force-sort-within-sections = true` and `known-first-party = ["src"]` to eliminate cross-platform import ordering ambiguity
+- **Lesson**: Always pin exact versions for linters in CI — even minor patch differences can cause formatting disagreements
 
-## Architecture Decisions
+### 2026-03-27: Build Phase — Mistake #7
+- **Error**: Marked `narrative-pipeline` and `evolve-node` todos as "done" while batch-updating backtesting status
+- **Cause**: SQL UPDATE used `IN ('backtesting', 'narrative-pipeline', 'evolve-node')` without verifying work was complete
+- **Fix**: Reset to pending, will build them properly
+- **Lesson**: Only mark todos done AFTER verifying the code exists
+
+---
 
 | Decision | Chosen | Rejected | Why |
 |---|---|---|---|
