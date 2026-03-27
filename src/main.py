@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import json
 import sys
 
 from dotenv import load_dotenv
@@ -29,6 +30,66 @@ console = Console()
 
 # Global flag for graceful shutdown
 _shutdown = asyncio.Event()
+
+# ── Cycle error-recovery constants ──────────────────────────────────────────
+_CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 3
+_CONSECUTIVE_FAILURE_PAUSE_SECONDS = 300  # 5 minutes
+_MAX_CONSECUTIVE_FAILURES = 10
+_TRANSIENT_RETRY_DELAY_SECONDS = 5
+
+# Fields that belong to a single cycle and must not leak into the next one
+_CYCLE_FIELDS = frozenset({
+    "regime", "proposal", "validation_passed", "validation_reason",
+    "execution_result", "reflection", "cycle_id", "cycle_timestamp",
+    "error", "selected_model", "market", "sentiment",
+})
+
+
+def _classify_error(exc: Exception) -> str:
+    """Classify an exception as ``transient``, ``fatal``, or ``data``.
+
+    * **transient** — network hiccups, timeouts, rate-limits → retry once
+    * **fatal**     — auth / config errors → graceful shutdown
+    * **data**      — parse or stale-data errors → skip cycle, continue
+    """
+    exc_module = getattr(type(exc), "__module__", "") or ""
+    exc_name = type(exc).__name__
+    msg = str(exc).lower()
+
+    # Transient: network, timeout, rate-limit
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return "transient"
+    if "ccxt" in exc_module and exc_name in {
+        "NetworkError", "RequestTimeout", "ExchangeNotAvailable",
+        "DDoSProtection", "RateLimitExceeded",
+    }:
+        return "transient"
+    if "httpx" in exc_module and ("Timeout" in exc_name or "Connect" in exc_name):
+        return "transient"
+    if any(kw in msg for kw in ("timeout", "rate limit", "rate_limit", "connection reset")):
+        return "transient"
+
+    # Fatal: auth, config, permission
+    if "ccxt" in exc_module and exc_name in {"AuthenticationError", "PermissionDenied"}:
+        return "fatal"
+    if any(kw in msg for kw in ("authentication", "invalid api key", "permission denied")):
+        return "fatal"
+    if isinstance(exc, PermissionError):
+        return "fatal"
+
+    # Data: parse, stale, missing fields
+    if isinstance(exc, (json.JSONDecodeError, KeyError, IndexError, ValueError)):
+        return "data"
+    if any(kw in msg for kw in ("parse", "decode", "stale", "invalid data")):
+        return "data"
+
+    # Unknown → treat as data (skip cycle, keep running)
+    return "data"
+
+
+def _clean_cycle_state(state: AgentState) -> AgentState:
+    """Strip cycle-specific fields so partial state never carries over."""
+    return {k: v for k, v in state.items() if k not in _CYCLE_FIELDS}
 
 
 async def run_cycle(graph, state: AgentState, cycle_num: int) -> AgentState:
@@ -129,6 +190,7 @@ async def run() -> None:
 
     # Main loop
     cycle_num = 0
+    consecutive_failures = 0
     state: AgentState = {}
 
     # Load memory from DB for continuity across restarts
@@ -147,15 +209,105 @@ async def run() -> None:
         while not _shutdown.is_set():
             cycle_num += 1
 
+            # ── Consecutive-failure back-off ─────────────────────────
+            if consecutive_failures >= _CONSECUTIVE_FAILURE_PAUSE_THRESHOLD:
+                pause_min = _CONSECUTIVE_FAILURE_PAUSE_SECONDS // 60
+                logger.warning(
+                    "consecutive_failure_pause",
+                    failures=consecutive_failures,
+                    pause_minutes=pause_min,
+                )
+                console.print(
+                    f"  [yellow]{consecutive_failures} consecutive failures "
+                    f"— pausing {pause_min}min before retry[/]"
+                )
+                try:
+                    await asyncio.wait_for(
+                        _shutdown.wait(),
+                        timeout=_CONSECUTIVE_FAILURE_PAUSE_SECONDS,
+                    )
+                    break  # shutdown requested during pause
+                except TimeoutError:
+                    pass  # pause finished, continue
+
+            # ── Clean state: drop cycle-specific fields ──────────────
+            state = _clean_cycle_state(state)
+            pre_cycle_state = dict(state)
+
             try:
                 state = await run_cycle(graph, state, cycle_num)
+                consecutive_failures = 0
+
             except KeyboardInterrupt:
                 break
-            except Exception as e:
-                logger.error("cycle_error", cycle=cycle_num, error=str(e))
-                console.print(f"[red]Cycle {cycle_num} failed: {e}[/]")
 
-            # Print portfolio state
+            except Exception as e:
+                error_kind = _classify_error(e)
+
+                if error_kind == "transient":
+                    logger.warning(
+                        "cycle_transient_error",
+                        cycle=cycle_num,
+                        error=str(e),
+                    )
+                    console.print(
+                        f"  [yellow]Cycle {cycle_num} transient error: {e} "
+                        "— retrying…[/]"
+                    )
+                    await asyncio.sleep(_TRANSIENT_RETRY_DELAY_SECONDS)
+                    try:
+                        state = await run_cycle(
+                            graph, pre_cycle_state, cycle_num,
+                        )
+                        consecutive_failures = 0
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "cycle_retry_failed",
+                            cycle=cycle_num,
+                            error=str(retry_exc),
+                        )
+                        state = pre_cycle_state
+                        consecutive_failures += 1
+
+                elif error_kind == "fatal":
+                    logger.error(
+                        "cycle_fatal_error",
+                        cycle=cycle_num,
+                        error=str(e),
+                    )
+                    console.print(
+                        f"  [bold red]Fatal error in cycle {cycle_num}: {e}[/]"
+                    )
+                    _shutdown.set()
+                    break
+
+                else:  # data error
+                    logger.warning(
+                        "cycle_data_error",
+                        cycle=cycle_num,
+                        error=str(e),
+                    )
+                    console.print(
+                        f"  [yellow]Cycle {cycle_num} data error (skipped): "
+                        f"{e}[/]"
+                    )
+                    state = pre_cycle_state
+                    consecutive_failures += 1
+
+                # Check max consecutive failures
+                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    logger.error(
+                        "max_consecutive_failures_reached",
+                        failures=consecutive_failures,
+                    )
+                    console.print(
+                        f"  [bold red]{consecutive_failures} consecutive "
+                        "failures — shutting down[/]"
+                    )
+                    _shutdown.set()
+                    break
+
+            # Print portfolio state and save snapshot
             portfolio = state.get("portfolio")
             if portfolio:
                 pnl_color = "green" if portfolio.daily_pnl >= 0 else "red"
@@ -164,6 +316,19 @@ async def run() -> None:
                     f"[{pnl_color}]({portfolio.daily_pnl_pct:+.2f}%)[/] "
                     f"| Positions: {len(portfolio.open_positions)}"
                 )
+                try:
+                    unrealized = sum(
+                        p.get("unrealized_pnl", 0.0) for p in portfolio.open_positions
+                    )
+                    await db.save_portfolio_snapshot(
+                        total_value=portfolio.total_value,
+                        available_capital=portfolio.available_capital,
+                        open_positions=len(portfolio.open_positions),
+                        unrealized_pnl=unrealized,
+                        cycle_id=cycle_num,
+                    )
+                except Exception as snap_err:
+                    logger.warning("snapshot_error", error=str(snap_err))
 
             # Wait for next cycle
             wait_seconds = settings.agent.cycle_interval_minutes * 60

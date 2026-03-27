@@ -249,14 +249,47 @@ class Database:
         await self._db.commit()
         return cursor.lastrowid or 0
 
-    async def get_recent_memories(self, limit: int = 20) -> list[dict]:
+    async def get_recent_memories(
+        self, limit: int = 20, entry_type: str | None = None
+    ) -> list[dict]:
         """Retrieve recent memory entries for inclusion in LLM prompts."""
         assert self._db is not None
-        cursor = await self._db.execute(
-            "SELECT * FROM memory ORDER BY timestamp DESC LIMIT ?", (limit,)
-        )
+        if entry_type is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM memory WHERE entry_type = ? ORDER BY timestamp DESC LIMIT ?",
+                (entry_type, limit),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM memory ORDER BY timestamp DESC LIMIT ?", (limit,)
+            )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def get_regime_history_summary(self, limit: int = 20) -> str:
+        """Return a text summary of recent regime classifications with counts."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT regime, confidence, strategy FROM regime_history "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+
+        if not rows:
+            return "No prior regime classifications."
+
+        regime_counts: dict[str, int] = {}
+        for row in rows:
+            r = dict(row)["regime"]
+            regime_counts[r] = regime_counts.get(r, 0) + 1
+
+        total = len(rows)
+        summary_parts = [f"Last {total} classifications:"]
+        for regime, count in sorted(regime_counts.items(), key=lambda x: -x[1]):
+            summary_parts.append(f"  {regime}: {count}/{total} ({count / total:.0%})")
+
+        return "\n".join(summary_parts)
 
     async def get_recent_trades(self, limit: int = 10) -> list[dict]:
         """Retrieve recent trades."""
@@ -290,3 +323,29 @@ class Database:
         )
         row = await cursor.fetchone()
         return dict(row) if row else {"trade_count": 0, "volume": 0, "total_fees": 0}
+
+    async def save_portfolio_snapshot(
+        self,
+        total_value: float,
+        available_capital: float,
+        open_positions: int,
+        unrealized_pnl: float,
+        cycle_id: int | None = None,
+    ) -> None:
+        """Persist a portfolio snapshot after each cycle."""
+        assert self._db is not None
+        await self._db.execute(
+            """INSERT INTO portfolio_snapshots
+            (timestamp, total_value, available_capital, open_positions,
+             daily_pnl, total_pnl)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(UTC).isoformat(),
+                total_value,
+                available_capital,
+                str(open_positions),
+                unrealized_pnl,
+                unrealized_pnl,
+            ),
+        )
+        await self._db.commit()

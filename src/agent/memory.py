@@ -60,26 +60,4 @@ class AgentMemory:
 
     async def get_regime_history_summary(self, limit: int = 20) -> str:
         """Get a summary of recent regime classifications for context."""
-        # Use the database directly to get regime history
-        assert self._db._db is not None
-        cursor = await self._db._db.execute(
-            "SELECT regime, confidence, strategy FROM regime_history ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-
-        if not rows:
-            return "No prior regime classifications."
-
-        # Count regime frequencies
-        regime_counts: dict[str, int] = {}
-        for row in rows:
-            r = dict(row)["regime"]
-            regime_counts[r] = regime_counts.get(r, 0) + 1
-
-        total = len(rows)
-        summary_parts = [f"Last {total} classifications:"]
-        for regime, count in sorted(regime_counts.items(), key=lambda x: -x[1]):
-            summary_parts.append(f"  {regime}: {count}/{total} ({count/total:.0%})")
-
-        return "\n".join(summary_parts)
+        return await self._db.get_regime_history_summary(limit=limit)

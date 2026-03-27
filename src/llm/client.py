@@ -8,6 +8,7 @@ Routing logic (deterministic, NOT decided by the LLM):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -21,6 +22,31 @@ logger = structlog.get_logger()
 
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
+
+# Retryable errors — transient failures worth retrying on the same model
+_RETRYABLE_ERRORS = (
+    litellm.Timeout,
+    litellm.RateLimitError,
+    litellm.APIConnectionError,
+    litellm.InternalServerError,
+    litellm.ServiceUnavailableError,
+    litellm.BadGatewayError,
+)
+
+# Fatal errors — retrying the same request won't help
+_FATAL_ERRORS = (
+    litellm.AuthenticationError,
+    litellm.BadRequestError,
+    litellm.NotFoundError,
+    litellm.PermissionDeniedError,
+    litellm.ContentPolicyViolationError,
+    litellm.ContextWindowExceededError,
+    litellm.UnprocessableEntityError,
+)
+
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 2  # Exponential backoff: 2s, 4s, 8s
+_REQUEST_TIMEOUT = 30  # seconds
 
 
 class LLMRouter:
@@ -79,6 +105,61 @@ class LLMClient:
         self._config = config
         self.router = LLMRouter(config)
 
+    async def _call_with_retry(self, kwargs: dict[str, Any]) -> str:
+        """Call litellm.acompletion with retry logic for transient errors.
+
+        Retries up to _MAX_RETRIES times for retryable errors with exponential
+        backoff (2s, 4s, 8s). Fatal errors and unknown exceptions propagate
+        immediately.
+        """
+        last_exception: Exception | None = None
+        model = kwargs.get("model", "unknown")
+
+        for attempt in range(1 + _MAX_RETRIES):
+            try:
+                response = await litellm.acompletion(**kwargs)
+                content = response.choices[0].message.content or ""
+                logger.debug(
+                    "llm_response",
+                    model=model,
+                    tokens=response.usage.total_tokens if response.usage else 0,
+                )
+                return content
+            except _RETRYABLE_ERRORS as e:
+                last_exception = e
+                if attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        "llm_retry",
+                        model=model,
+                        attempt=attempt + 1,
+                        max_retries=_MAX_RETRIES,
+                        delay_seconds=delay,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(
+                    "llm_retries_exhausted",
+                    model=model,
+                    attempts=1 + _MAX_RETRIES,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
+            except _FATAL_ERRORS as e:
+                logger.error(
+                    "llm_fatal_error",
+                    model=model,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
+
+        # Safety net — loop should always return or raise above
+        raise last_exception  # type: ignore[misc]
+
     async def complete(
         self,
         messages: list[dict[str, str]],
@@ -101,6 +182,7 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "temperature": self._config.temperature,
+            "timeout": _REQUEST_TIMEOUT,
         }
 
         # Copilot proxy needs api_base override
@@ -112,15 +194,7 @@ class LLMClient:
             kwargs["response_format"] = response_format
 
         try:
-            response = await litellm.acompletion(**kwargs)
-            content = response.choices[0].message.content or ""
-            logger.debug(
-                "llm_response",
-                model=model,
-                tokens=response.usage.total_tokens if response.usage else 0,
-            )
-            return content
-
+            return await self._call_with_retry(kwargs)
         except Exception as e:
             logger.error("llm_error", model=model, error=str(e))
             # Try fallback model
@@ -129,8 +203,7 @@ class LLMClient:
                 kwargs["model"] = self._config.fallback_model
                 kwargs.pop("api_base", None)
                 kwargs.pop("api_key", None)
-                response = await litellm.acompletion(**kwargs)
-                return response.choices[0].message.content or ""
+                return await self._call_with_retry(kwargs)
             raise
 
     async def complete_json(

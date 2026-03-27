@@ -109,6 +109,7 @@ class MarketSnapshot:
     bid: float = 0.0
     ask: float = 0.0
     spread_pct: float = 0.0
+    stale: bool = False  # True when OHLCV data is older than expected
 
     # Technical indicators (computed locally, not by LLM)
     rsi: float | None = None

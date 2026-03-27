@@ -39,6 +39,22 @@ Respond with ONLY a JSON object:
   "lessons_learned": ["lesson1", "lesson2"]
 }}"""
 
+REJECTED_REFLECTION_PROMPT = """The risk engine rejected a proposed trade this cycle.
+
+## This Cycle
+- Regime: {regime} (confidence: {regime_confidence:.0%})
+- Proposed Action: {action}
+- Rejection Reason: {validation_reason}
+
+Was the proposal reasonable given market conditions? Was the risk engine right to block it?
+Respond with ONLY a JSON object:
+{{
+  "trades_reviewed": 0,
+  "regime_accuracy": "Brief assessment of regime classification.",
+  "patterns_noticed": ["pattern1"],
+  "lessons_learned": ["lesson1"]
+}}"""
+
 
 async def reflect_node(
     state: AgentState,
@@ -51,26 +67,59 @@ async def reflect_node(
     regime = state.get("regime")
     proposal = state.get("proposal")
     portfolio = state.get("portfolio")
-    execution_result = state.get("execution_result", {})
+    validation_passed = state.get("validation_passed", False)
+    execution_result = state.get("execution_result") or {}
 
+    trade_executed = bool(
+        execution_result and execution_result.get("status") == "filled"
+    )
+
+    # ── SIT_OUT: no trade proposed → minimal note, no LLM call ──────────
+    if not proposal:
+        regime_label = regime.regime.value if regime else "unknown"
+        note = f"Sat out — regime {regime_label}, no trade proposed"
+        logger.info("reflection_skipped", reason="sit_out")
+        return {
+            "reflection": ReflectionEntry(
+                timestamp=datetime.now(UTC),
+                trades_reviewed=0,
+                regime_accuracy="",
+                patterns_noticed=[],
+                lessons_learned=[note],
+            )
+        }
+
+    # ── Build prompt based on trade outcome ─────────────────────────────
     recent_trades = await db.get_recent_trades(limit=5)
     trades_text = "No recent trades" if not recent_trades else "\n".join(
         f"- {t['action']} {t['symbol']} at ${t['price']:,.2f} — {t.get('reasoning', 'N/A')[:80]}"
         for t in recent_trades
     )
 
-    prompt = REFLECTION_PROMPT.format(
-        regime=regime.regime.value if regime else "unknown",
-        regime_confidence=regime.regime_confidence if regime else 0,
-        action=proposal.action.value if proposal else "NONE",
-        validation=("PASSED" if state.get("validation_passed") else "REJECTED"),
-        validation_reason=state.get("validation_reason", "N/A"),
-        execution_status=execution_result.get("status", "N/A"),
-        recent_trades=trades_text,
-        total_value=portfolio.total_value if portfolio else 0,
-        daily_pnl_pct=portfolio.daily_pnl_pct if portfolio else 0,
-        trade_count=len(recent_trades),
-    )
+    if not validation_passed:
+        # Risk engine rejected → shorter, focused prompt
+        prompt = REJECTED_REFLECTION_PROMPT.format(
+            regime=regime.regime.value if regime else "unknown",
+            regime_confidence=regime.regime_confidence if regime else 0,
+            action=proposal.action.value,
+            validation_reason=state.get("validation_reason", "N/A"),
+        )
+        reflection_type = "rejection"
+    else:
+        # Trade executed (or hold) → full reflection
+        prompt = REFLECTION_PROMPT.format(
+            regime=regime.regime.value if regime else "unknown",
+            regime_confidence=regime.regime_confidence if regime else 0,
+            action=proposal.action.value,
+            validation="PASSED",
+            validation_reason=state.get("validation_reason", "N/A"),
+            execution_status=execution_result.get("status", "N/A"),
+            recent_trades=trades_text,
+            total_value=portfolio.total_value if portfolio else 0,
+            daily_pnl_pct=portfolio.daily_pnl_pct if portfolio else 0,
+            trade_count=len(recent_trades),
+        )
+        reflection_type = "execution" if trade_executed else "hold"
 
     try:
         messages = [
@@ -102,6 +151,7 @@ async def reflect_node(
 
         logger.info(
             "reflection_complete",
+            reflection_type=reflection_type,
             lessons=len(reflection.lessons_learned),
             patterns=len(reflection.patterns_noticed),
         )
